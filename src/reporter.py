@@ -93,4 +93,4 @@ def print_news(symbol, articles):
             else str(article["date"])
         )
         print(f"    - {article['title']} ({date_str})")
-
+    print()

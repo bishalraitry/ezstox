@@ -62,8 +62,8 @@ def main():
     if owned_symbols:
         print("Your Holdings:")
         for symbol in owned_symbols:
-        articles = get_stock_news(symbol, limit=2)
-        print_news(symbol, articles)
+            articles = get_stock_news(symbol, limit=2)
+            print_news(symbol, articles)
     
     if watched_symbols:
         print("\nWatchlist:")

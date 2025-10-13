@@ -1,0 +1,3 @@
+Have articles and news linked to the sources
+
+Skipped  port manager for now since i dont wnat to ahve something hardcoded for now
