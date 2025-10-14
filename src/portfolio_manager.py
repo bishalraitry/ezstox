@@ -5,14 +5,14 @@ Portfolio + Watchlist manager
 import os
 
 
-class portfolio:
+class Portfolio:
     """Manage portfolio holdings, watchlist, and cash"""
 
     def __init__(
         self,
         portfolio_file="data/portfolio.txt",
         watchlist_file="data/watchlist.txt",
-        cash_file="data/cash,txt",
+        cash_file="data/cash.txt",
     ):
         self.portfolio_file = portfolio_file
         self.watchlist_file = watchlist_file

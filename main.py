@@ -17,7 +17,7 @@ def main():
     portfolio = Portfolio()
     print()
 
-    owned_symbols = portfolio.get_symbols()
+    owned_symbols = portfolio.get_portfolio_symbols()
     watched_symbols = portfolio.get_watchlist_symbols()
 
     all_symbols = portfolio.get_all_symbols()

@@ -5,14 +5,12 @@ Reporter module for formatting and displaying portfolio data
 from datetime import datetime
 
 
-def print_herader():
+def print_header():
     """Print application header"""
-
-
-print("\n" + "=" * 50)
-print("     EZSTOX - Portfolio Tracker")
-print(f"    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-print("=" * 50 + "\n")
+    print("\n" + "=" * 50)
+    print("     EZSTOX - Portfolio Tracker")
+    print(f"    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 50 + "\n")
 
 
 def print_position(position):
@@ -22,12 +20,12 @@ def print_position(position):
     Args:
         position (dict): Position details from portfolio_manager
     """
-    symbol = position["symbol"]
-    shares = position["symbol"]
-    cost_basis = position["cost-basis"]
-    current_price = position["current_price"]
-    gain_loss = position["gain_loss"]
-    gain_loss_pct = position["gain_loss_pct"]
+    symbol = position['symbol']
+    shares = position['shares']
+    cost_basis = position['cost_basis']
+    current_price = position['current_price']
+    gain_loss = position['gain_loss']
+    gain_loss_pct = position['gain_loss_pct']
 
     # Colour coding to make it pretty
     sign = "+" if gain_loss >= 0 else ""
@@ -56,7 +54,7 @@ def print_summary(totals):
     print("-" * 50)
     print("PORTFOLIO SUMMARY")
     print("-" * 50)
-    print(f"Total Invested: ${totals['total-invested']}")
+    print(f"Total Invested: ${totals['total_invested']}")
     print(f"Current Value: ${totals['total_current']:.2f}")
 
     gain_loss = totals["total_gain_loss"]
