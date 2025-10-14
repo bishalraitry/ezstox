@@ -85,10 +85,14 @@ def print_news(symbol, articles):
 
     print(f"\n Recent news for {symbol}:")
     for article in articles:
-        date_str = (
-            article["date"].strftime("%Y-%m-%d")
-            if hasattr(article["date"], "strftime")
-            else str(article["date"])
-        )
-        print(f"    - {article['title']} ({date_str})")
+        title = article.get('title', 'No title')
+        date = article.get('date', 'Unknown date')
+
+        # Format date if it's a datetime object
+
+        if hasattr(date, 'strftime'):
+            date_str = date.strftime('%Y-%m-%d')
+        else:
+            date_str = str(date)
+        print(f"    • {title} ({date_str})")
     print()
