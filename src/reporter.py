@@ -87,12 +87,15 @@ def print_news(symbol, articles):
     for article in articles:
         title = article.get('title', 'No title')
         date = article.get('date', 'Unknown date')
+        url = article.get('url', 'No link available')
 
         # Format date if it's a datetime object
 
-        if hasattr(date, 'strftime'):
-            date_str = date.strftime('%Y-%m-%d')
-        else:
-            date_str = str(date)
-        print(f"    • {title} ({date_str})")
-    print()
+        print(f"    • {title}")
+        print(f"    📅 {date}")
+
+        if url and url != 'No link available':
+            print (f"   🔗 {url}")
+
+
+        print()
