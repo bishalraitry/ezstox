@@ -1,6 +1,7 @@
-Need to fix the dates from when it was all collected
+Reorder file structure, some files are getting too long
 
-Have articles and news linked to the sources
+
+Need to fix the dates from when it was all collected
 
 Use llm for adding better insight.
     This is a big task we will need to have a look at 
