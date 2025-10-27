@@ -4,9 +4,12 @@ Entry
 """
 
 import sys
-from src.portfolio_manager import Portfolio
+
 from src.data_fetcher import get_multiple_prices, get_stock_news
-from src.reporter import print_header, print_position, print_summary, print_news
+from src.llm_advisor import get_ai_advice
+from src.portfolio_manager import Portfolio
+from src.reporter import (print_header, print_news, print_position,
+                          print_summary)
 
 
 def main():
@@ -75,30 +78,31 @@ def main():
 def main_with_ai():
     """Run portfolio tracker with AI advisor"""
     print("DEBUG: Entered main_with_ai()")
-    
+
     try:
         from src.llm_advisor import get_ai_advice
+
         print("DEBUG: Successfully imported get_ai_advice")
     except Exception as e:
         print(f"DEBUG: Import failed: {e}")
         return
-    
+
     # Load portfolio
     print("DEBUG: Loading portfolio...")
     portfolio = Portfolio()
     print("DEBUG: Portfolio loaded")
-    
+
     # Get AI advice
     print("DEBUG: Calling get_ai_advice()...")
     advice = get_ai_advice(portfolio)
-    
+
     # Display advice
     print(advice)
     print()
 
 
 if __name__ == "__main__":
-    if '--ai-advice' in sys.argv:
+    if "--ai-advice" in sys.argv:
         print("DEBUG: AI advice flag detected!")
         main_with_ai()
     else:

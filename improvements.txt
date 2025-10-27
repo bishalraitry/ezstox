@@ -1,11 +1,10 @@
-Reorder file structure, some files are getting too long
 
 
 Need to fix the dates from when it was all collected
 
-Use llm for adding better insight.
-    This is a big task we will need to have a look at 
 
 Have amounts and tickers changeable and selectable through the terminal itself, read and write against the txt files that we have?
 
 Potentially have it so that we can actually choose what we want to look at, rather than blurt.
+
+Need to have llm display url as well.
