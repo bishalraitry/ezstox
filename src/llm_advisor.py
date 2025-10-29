@@ -1,9 +1,11 @@
 """
 LLM Advisor Module - AI-powered portfolio analysis
 Uses OpenAI GPT-4o to provide investment recommendations
+Optimized with fundamentals data + improved article scraping
 """
 
 import os
+import time
 from datetime import datetime, timedelta
 
 import feedparser
@@ -13,7 +15,9 @@ from openai import OpenAI
 
 from src.data_fetcher import get_multiple_prices, get_stock_news
 
-# STOCK_CONTENT , add as needed
+# =============================================================================
+# STOCK CONTEXT - Add your stocks here as you expand
+# =============================================================================
 
 STOCK_CONTEXT = {
     "META": {
@@ -45,43 +49,46 @@ STOCK_CONTEXT = {
         "known_peers": ["AMD", "INTC"],
     },
     "TSM": {
-        "sector": "semiconductors",
-        "known_suppliers": ["ASML", "AMAT"],
+        "sector": "semiconductors_foundry",
         "known_customers": ["AAPL", "NVDA", "AMD"],
-        "known_peers": ["NVDA", "AMD", "INTC"],
+        "known_peers": ["INTC", "SMSN"],
     },
-    "AMD": {
-        "sector": "semiconductors_ai",
-        "known_suppliers": ["TSM", "ASML"],
-        "known_customers": ["META", "MSFT", "cloud_providers"],
-        "known_peers": ["NVDA", "INTC"],
+    "IGLN.L": {
+        "sector": "commodity_gold",
+        "asset_type": "physical_gold_etc",
+        "description": "iShares Physical Gold ETC",
+        "note": "NOT a stock - tracks physical gold price, NOT clean energy",
     },
-    "SSNLF": {
-        "sector": "consumer_tech_semiconductors",
-        "known_suppliers": ["ASML", "raw_materials"],
-        "known_peers": ["AAPL", "TSM"],
-        "known_products": ["smartphones", "semiconductors", "displays"],
+    "VUSA.L": {
+        "sector": "index_fund_sp500",
+        "asset_type": "etf",
+        "description": "Vanguard S&P 500 UCITS ETF",
+        "note": "Tracks S&P 500 index",
     },
     "GLD": {
         "sector": "commodity_gold",
-        "known_peers": ["IAU", "PHYS"],
-        "known_customers": ["investors", "central_banks"],
+        "asset_type": "gold_etf",
+        "description": "SPDR Gold Shares",
+        "known_peers": ["IAU", "IGLN.L"],
     },
     "SLV": {
         "sector": "commodity_silver",
-        "known_peers": ["SIVR", "PSLV"],
-        "known_customers": ["investors", "industrial"],
+        "asset_type": "silver_etf",
+        "description": "iShares Silver Trust",
     },
 }
 
+# =============================================================================
 
-def get_article_content(url, max_chars=3000):
+
+def get_article_content(url, max_chars=3000, retries=2):
     """
-    Fetch full article content using Jina AI Reader
+    Fetch full article content using Jina AI Reader with retry logic
 
     Args:
         url (str): Article URL
         max_chars (int): Maximum characters to return
+        retries (int): Number of retry attempts
 
     Returns:
         str: Clean article text or None if failed
@@ -89,20 +96,69 @@ def get_article_content(url, max_chars=3000):
     if not url or url == "No link available":
         return None
 
+    for attempt in range(retries):
+        try:
+            jina_url = f"https://r.jina.ai/{url}"
+            headers = {"X-Return-Format": "text"}
+
+            response = requests.get(jina_url, headers=headers, timeout=20)
+
+            if response.status_code == 200:
+                content = response.text[:max_chars]
+                if len(content) > 100:  # Minimum viable content
+                    return content
+
+            # Wait before retry
+            if attempt < retries - 1:
+                time.sleep(2)
+
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(3)
+                continue
+            print(f"  ⚠️  Failed after {retries} attempts: {str(e)[:50]}")
+
+    return None
+
+
+def get_stock_fundamentals(symbol):
+    """
+    Get key financial metrics from OpenBB
+
+    Args:
+        symbol (str): Stock ticker
+
+    Returns:
+        dict: Financial metrics or empty dict if unavailable
+    """
+    from openbb import obb
+
+    fundamentals = {}
+
     try:
-        jina_url = f"https://r.jina.ai/{url}"
-        headers = {"X-Return-Format": "text"}
+        # Get key metrics from Yahoo Finance
+        quote = obb.equity.price.quote(symbol, provider="yfinance")
+        quote_df = quote.to_df()
 
-        response = requests.get(jina_url, headers=headers, timeout=15)
+        if len(quote_df) > 0:
+            q = quote_df.iloc[0]
 
-        if response.status_code == 200:
-            return response.text[:max_chars]
-        else:
-            return None
+            # Extract available metrics
+            fundamentals["pe_ratio"] = q.get("pe_ttm")
+            fundamentals["forward_pe"] = q.get("forward_pe")
+            fundamentals["market_cap"] = q.get("market_cap")
+            fundamentals["beta"] = q.get("beta")
+            fundamentals["dividend_yield"] = q.get("dividend_yield")
+            fundamentals["fifty_two_week_high"] = q.get("fifty_two_week_high")
+            fundamentals["fifty_two_week_low"] = q.get("fifty_two_week_low")
+            fundamentals["analyst_target_mean"] = q.get("price_target_average")
+            fundamentals["analyst_target_high"] = q.get("price_target_high")
+            fundamentals["analyst_target_low"] = q.get("price_target_low")
 
     except Exception as e:
-        print(f"  ⚠️  Failed to fetch article: {str(e)[:50]}")
-        return None
+        print(f"  ⚠️  Could not fetch fundamentals for {symbol}: {str(e)[:50]}")
+
+    return fundamentals
 
 
 def validate_percentage_change(change_pct, timeframe="5 days"):
@@ -116,7 +172,6 @@ def validate_percentage_change(change_pct, timeframe="5 days"):
     Returns:
         tuple: (is_valid, validated_value)
     """
-    # Market can't realistically move >10% in 5 days under normal conditions
     if abs(change_pct) > 10:
         print(
             f"  ⚠️  Suspicious data: {change_pct:.2f}% change in {timeframe} (likely data error)"
@@ -137,7 +192,6 @@ def get_financial_news_rss(limit=10):
         list: News articles with title, url, date
     """
     try:
-        # Google News RSS feed for finance/markets
         rss_url = "https://news.google.com/rss/search?q=stock+market+finance+economy+when:2d&hl=en-US&gl=US&ceid=US:en"
 
         feed = feedparser.parse(rss_url)
@@ -187,7 +241,6 @@ def get_vix_from_fred(fred_api_key=None):
         if len(vix_series) > 0:
             vix_level = round(vix_series.iloc[-1], 2)
 
-            # Interpret VIX level
             if vix_level < 15:
                 vix_sentiment = "Low (Calm market)"
             elif vix_level < 25:
@@ -220,12 +273,11 @@ def get_macro_data(fred_api_key=None):
 
     macro = {}
 
-    # 1. Financial news from Google RSS (free, no key needed)
+    # 1. Financial news from Google RSS
     print("  • Fetching global financial news (RSS)...")
     try:
         articles = get_financial_news_rss(limit=10)
 
-        # Scrape full content for top 5 articles
         print("    → Scraping top articles...")
         for article in articles[:5]:
             url = article.get("url")
@@ -239,12 +291,12 @@ def get_macro_data(fred_api_key=None):
         print(f"    ⚠️  Error fetching news: {e}")
         macro["world_news"] = []
 
-    # 2. Market indices performance (with PROPER date ranges)
+    # 2. Market indices
     print("  • Fetching market indices...")
     indices = {}
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=7)  # 7 days to account for weekends
+    start_date = end_date - timedelta(days=7)
 
     for symbol, name in [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow Jones")]:
         try:
@@ -260,7 +312,6 @@ def get_macro_data(fred_api_key=None):
                 week_ago = df["close"].iloc[0]
                 change_pct = ((current - week_ago) / week_ago) * 100
 
-                # Validate the data
                 is_valid, validated_change = validate_percentage_change(
                     change_pct, "5 days"
                 )
@@ -286,7 +337,7 @@ def get_macro_data(fred_api_key=None):
 
     macro["indices"] = indices
 
-    # 3. VIX (Volatility/Fear Index) from FRED
+    # 3. VIX
     print("  • Fetching VIX from FRED...")
     try:
         macro["vix"] = get_vix_from_fred(fred_api_key)
@@ -294,7 +345,7 @@ def get_macro_data(fred_api_key=None):
         print(f"    ⚠️  VIX fetch failed: {e}")
         macro["vix"] = {"level": "N/A", "sentiment": "N/A"}
 
-    # 4. Tech sector performance
+    # 4. Tech sector
     print("  • Fetching tech sector data...")
     try:
         tech_data = obb.equity.price.historical(
@@ -320,7 +371,6 @@ def get_macro_data(fred_api_key=None):
         else:
             macro["tech_sector"] = {"current": "N/A", "change_5d": "N/A"}
 
-        # Get tech sector news
         tech_news = obb.news.company("XLK", limit=3)
         tech_news_df = tech_news.to_df()
 
@@ -340,13 +390,13 @@ def get_macro_data(fred_api_key=None):
 
 def gather_stock_data(portfolio):
     """
-    Gather all stock-specific data with full article content
+    Gather stock data: prices, news (5 articles), and fundamentals
 
     Args:
         portfolio: Portfolio object
 
     Returns:
-        dict: Prices and news with full article content
+        dict: Prices, news, and fundamentals
     """
     print("📊 Gathering stock-specific data...")
 
@@ -358,371 +408,216 @@ def gather_stock_data(portfolio):
     print("\n💰 Fetching current prices...")
     prices = get_multiple_prices(all_symbols)
 
-    # Get news with full article content
-    print("\n📰 Fetching news + scraping articles...")
+    # Get fundamentals + news
+    print("\n📊 Fetching fundamentals + news...")
     news_data = {}
+    fundamentals_data = {}
 
     for symbol in all_symbols:
         print(f"\n  {symbol}:")
-        articles = get_stock_news(symbol, limit=5)
 
-        # Scrape full content for top 3 articles only
-        for i, article in enumerate(articles[:3], 1):
+        # Get fundamentals
+        print(f"    → Fetching fundamentals...")
+        fundamentals_data[symbol] = get_stock_fundamentals(symbol)
+
+        # Get 8 news articles
+        articles = get_stock_news(symbol, limit=8)
+
+        # Scrape top 5
+        scraped_count = 0
+        for i, article in enumerate(articles[:5], 1):
             url = article.get("url")
             if url and url != "No link available":
-                print(f"    → Scraping article {i}/3...")
-                content = get_article_content(url)
+                print(f"    → Scraping article {i}/5...")
+                content = get_article_content(url, retries=2)
                 article["full_content"] = content if content else "Content unavailable"
+                if content:
+                    scraped_count += 1
+                time.sleep(1.5)  # Rate limiting
             else:
                 article["full_content"] = "No URL available"
 
-        news_data[symbol] = articles[:3]  # Only keep top 3
+        news_data[symbol] = articles[:5]
+        print(f"    ✅ {scraped_count}/5 articles scraped successfully")
 
     print("\n✅ Stock data gathered\n")
 
-    return {"prices": prices, "news": news_data}
+    return {"prices": prices, "news": news_data, "fundamentals": fundamentals_data}
 
 
 def format_llm_prompt(portfolio, stock_data, macro_data):
     """
-    Format comprehensive prompt for LLM with anti-hallucination instructions
-
-    Args:
-        portfolio: Portfolio object
-        stock_data: Stock prices and news
-        macro_data: Market context data
-
-    Returns:
-        str: Formatted prompt with ft inspiration
+    Format FT-style prompt with fundamentals and data quality tracking
     """
     owned = portfolio.get_portfolio_symbols()
     watched = portfolio.get_watchlist_symbols()
     prices = stock_data["prices"]
     news = stock_data["news"]
+    fundamentals = stock_data.get("fundamentals", {})
 
     prompt = f"""You are an expert financial analyst providing institutional-quality investment research.
 
-🎯 ANALYSIS FRAMEWORK (Financial Times Standard):
+🎯 CRITICAL RULES:
 
-Your analysis must mach the rigor and specification of professional financial journalism:
-- Cite SPECIFIC sources numbers from articles (percentages, dollar amounts, targets)
-- Reference MULTIPLE sources to show consensus or conflicts
-- Quanitfy risks and returns ("expect +X% if Y happens")
-- Connect dots across sectors (suppliers, customers, peers)
-- Be brutally honest about uncertainties
+1. DATA SUFFICIENCY:
+   - Stock with <3 of 5 articles: Mark "LIMITED DATA - Lower conviction"
+   - Stock with 0-1 articles + no fundamentals: "INSUFFICIENT DATA - CANNOT ANALYZE"
+   - NEVER make recommendations without evidence
+
+2. PRIORITIZE FUNDAMENTALS:
+   - Analyst targets > Article speculation
+   - P/E ratios > Vague sector trends
+   - Actual earnings > Generic news
+
+3. CITE SOURCES:
+   - "Fundamentals show P/E of X"
+   - "Article [1] states Y"
+   - "Analyst target: $Z"
+
+4. CONCISE OUTPUT:
+   - Max 1,500 words total
+   - Each stock: 150 words max
+   - Direct, actionable, no fluff
 
 ==================================================
 ANALYSIS DATE: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 ==================================================
 
-=== PORTFOLIO OVERVIEW ===
+=== PORTFOLIO ===
+
+HOLDINGS:
 """
-    # Portfolio holdings with context
+
+    # Holdings with fundamentals
     if owned:
-        prompt += "\nCURRENT HOLDINGS:\n"
         for symbol in owned:
             holding = portfolio.holdings[symbol]
             current_price = prices.get(symbol, 0)
-
             total_cost = holding["shares"] * holding["cost_basis"]
             current_value = holding["shares"] * current_price
             gain_loss = current_value - total_cost
             gain_loss_pct = (gain_loss / total_cost * 100) if total_cost > 0 else 0
 
-            # Sector context
-
             context = STOCK_CONTEXT.get(symbol, {})
-            sector_info = (
-                f"    (Sector: {context.get('sector', 'N?A')})" if context else ""
-            )
+            sector = context.get("sector", "Unknown")
 
-            prompt += f"""
-{symbol}{sector_info}:
-    Position: {holding['shares']} shares @ ${holding['cost_basis']:.2f} avg cost
-    Current: ${current_price:.2f}
-    Value: ${current_value:.2f}
-    P&L: ${gain_loss:.2f} ({gain_loss_pct:+.2f}%)
-"""
+            prompt += f"\n{symbol} ({sector}): {holding['shares']} sh @ ${holding['cost_basis']:.2f} → ${current_price:.2f} | P&L: ${gain_loss:.2f} ({gain_loss_pct:+.1f}%)\n"
 
-    total_portfolio_value = portfolio.cash + sum(
+            # Fundamentals
+            fund = fundamentals.get(symbol, {})
+            if fund.get("pe_ratio"):
+                prompt += f"  P/E: {fund['pe_ratio']:.1f}"
+            if fund.get("analyst_target_mean"):
+                upside = (
+                    (
+                        (fund["analyst_target_mean"] - current_price)
+                        / current_price
+                        * 100
+                    )
+                    if current_price > 0
+                    else 0
+                )
+                prompt += (
+                    f" | Target: ${fund['analyst_target_mean']:.0f} ({upside:+.0f}%)"
+                )
+            if fund.get("fifty_two_week_high"):
+                prompt += f" | 52w: ${fund['fifty_two_week_low']:.0f}-${fund['fifty_two_week_high']:.0f}"
+            prompt += "\n"
+
+    total_value = portfolio.cash + sum(
         portfolio.holdings[s]["shares"] * prices.get(s, 0) for s in owned
     )
-    cash_pct = (
-        (portfolio.cash / total_portfolio_value * 100)
-        if total_portfolio_value > 0
-        else 100
-    )
+    cash_pct = (portfolio.cash / total_value * 100) if total_value > 0 else 100
 
-    prompt += f"\nCASH: %{portfolio.cash:,.2f} ({cash_pct:,.1f}% of portfolio)\n"
-    prompt += f"TOTAL PORTFOLIO VALUE: ${total_portfolio_value:,.2f}\n"
+    prompt += f"\nCASH: ${portfolio.cash:,.0f} ({cash_pct:.1f}%)\nTOTAL: ${total_value:,.0f}\n"
 
-    # Watchlist with context
+    # Watchlist
     if watched:
-        prompt += "\nWATCHLIST (Considering): \n"
+        prompt += "\nWATCHLIST:\n"
         for symbol in watched:
-            price = prices.get(symbol, "N/A")
+            price = prices.get(symbol, 0)
             context = STOCK_CONTEXT.get(symbol, {})
-            sector_info = f" - {context.get('sector', 'N/A')}" if context else ""
-            prompt += f" {symbol}: ${price}{sector_info}\n"
+            sector = context.get("sector", "Unknown")
+            prompt += f"{symbol} ({sector}): ${price}"
 
-    # Market context with interpretation
-    prompt += "\n\n=== MARKET CONTEXT ===\n"
-    prompt += "Current macro environment affecting portfolio:\n\n"
+            fund = fundamentals.get(symbol, {})
+            if fund.get("pe_ratio"):
+                prompt += f" | P/E: {fund['pe_ratio']:.1f}"
+            if fund.get("analyst_target_mean"):
+                upside = (
+                    ((fund["analyst_target_mean"] - price) / price * 100)
+                    if price > 0
+                    else 0
+                )
+                prompt += (
+                    f" | Target: ${fund['analyst_target_mean']:.0f} ({upside:+.0f}%)"
+                )
+            prompt += "\n"
 
-    # Indices with validation
-    prompt += "Market Performance (Last 5 Trading days):\n"
-    indices_data = macro_data.get("indices", {})
-    for symbol, data in indices_data.items():
+    # Macro
+    prompt += "\n=== MARKET CONTEXT ===\n"
+    for symbol, data in macro_data.get("indices", {}).items():
         change = data.get("change_5d", "N/A")
-        if change == "Data Error":
-            prompt += f"    {data['name']}: [Data Error -Ignore]\n"
-        elif change != "N/A":
-            prompt += f"    {data['name']}: {change:+.2f}%\n"
-        else:
-            prompt += f"    {data['name']}: Data Unavailable\n"
+        if change not in ["N/A", "Data Error"]:
+            prompt += f"{data['name']}: {change:+.1f}% (5d)\n"
 
-    # VIX with interprertation
     vix = macro_data.get("vix", {})
-    vix_level = macro_data.get("vix", "N/A")
-    if vix_level != "N/A":
-        prompt += (
-            f"\nVolatility Index (VIX): {vix_level} - {vix.get('sentiment', 'N/A')}\n"
-        )
-        prompt += "    Context = VIX 12-20=Calm | 20-30=Elevated | >30=Fear\n"
-    else:
-        prompt += (
-            "\nVolatility Index (VIX): Unavailable (use caution without fear gauge)\n"
-        )
+    if vix.get("level") != "N/A":
+        prompt += f"VIX: {vix['level']} ({vix['sentiment']})\n"
 
-    # Tech sector (relevant for this portfolio)
-    tech = macro_data.get("tech_sector", {})
-    tech_change = tech.get("change_5d", "N/A")
-    if tech_change not in ["N/A", "Data Error"]:
-        prompt += f"\nTechnology Sector (XLK): {tech_change:+.2f}%\n"
-        prompt += (
-            "    Note: Your portfolio is tech-heavy - this is your sector benchmark\n"
+    # Stock news with data quality
+    prompt += "\n=== STOCK INTELLIGENCE ===\n"
+
+    for symbol in owned + watched:
+        stock_news = news.get(symbol, [])
+        available_count = sum(
+            1
+            for a in stock_news
+            if a.get("full_content")
+            not in [None, "Content unavailable", "No URL available"]
+        )
+        quality = (
+            "✅" if available_count >= 3 else "⚠️" if available_count >= 1 else "❌"
         )
 
-    # Top financial headlines
-    world_news = macro_data.get("world_news", [])
-    if world_news:
-        prompt += "\n\nGLOBAL FINANCIAL NEWS (Last 48 hours):\n"
-        prompt += "Key themes affecting markets:\n"
-        for i, article in enumerate(world_news[:5], 1):
-            prompt += "Key themes affecting markets:\n"
-            if article.get("content"):
-                prompt += f"    Key Points: {article['content'][:500]}...\n"
-    else:
-        prompt += "\n\nGlobal News: Limited data available\n"
+        prompt += f"\n{symbol} {quality} ({available_count}/5 articles):\n"
 
-    # Stock-specific news with sector context
-    prompt += "\n\n=== STOCK-SPECIFIC INTELLIGENCE ===\n"
+        if available_count > 0:
+            for i, article in enumerate(stock_news[:3], 1):
+                prompt += f"[{i}] {article['title']}\n"
+                content = article.get("full_content", "")
+                if content and content not in [
+                    "Content unavailable",
+                    "No URL available",
+                ]:
+                    prompt += f"    {content[:400]}...\n"
+        else:
+            prompt += "  ❌ NO DATA - Cannot analyze\n"
 
-    if owned:
-        prompt += "\n📊 YOUR HOLDINGS (Analyze deeply):\n"
-        for symbol in owned:
-            context = STOCK_CONTEXT.get(symbol, {})
-
-            prompt += f"\n{symbol}"
-            if context:
-                prompt += f"    |   Sector: {context.get('sector', 'N/A')}\n"
-                if context.get("known_suppliers"):
-                    prompt += (
-                        f"    Suppliers: {', '.join(context['known_suppliers'])}\n"
-                    )
-                if context.get("known_customers"):
-                    prompt += f"    Customers {', '.join(context['known_customers'])}\n"
-                if context.get("known_peers"):
-                    prompt += f"    Peers: {', '.join(context['known_peers'])}\n"
-            else:
-                prompt += "\n"
-
-            prompt += " News Analysis:\n"
-            stock_news = news.get(symbol, [])
-            if stock_news:
-                for i, article in enumerate(stock_news, 1):
-                    prompt += f"    [{i}] {article['title']}\n"
-                    if article.get("full_content"):
-                        prompt += f"    Details: {article['full_content'][:600]}...\n"
-
-            else:
-                prompt += " No recent news available\n"
-
-        if watched:
-            prompt += "\n\n🎯 WATCHLIST (Evaluuate for purchase): \n"
-            for symbol in watched:
-                context = STOCK_CONTEXT.get(symbol, {})
-
-                prompt += f"\n{symbol}"
-                if context:
-                    prompt += f" | Sector: {context.get('sector', 'N/A')}\n"
-            else:
-                prompt += "    No recent news available \n"
-
-    # FT-Style Analysis Instructions
+    # Instructions
     prompt += """
-=== YOUR ANALYSIS TASK ===
 
-ALL EXAMPLES GIVEN ARE EXAMPLES ONLY, THEY ARE NOT REAL DO NOT USE THE EXAMPLES, ONLY USE THE EXAMPLES AS A GUIDANCE ON THE RESPONSE I REQUIRE.
+=== YOUR ANALYSIS ===
 
-Provide institutional-quality research managing Finanial Times Standards
+Format (max 1,500 words total):
 
-📋 REQUIRED FORMAT (for each recommendation):
+I. MARKET OVERVIEW (100 words)
+II. HOLDINGS: For each - Hold/Add/Trim? Why? (150 words each)
+III. WATCHLIST: Top 2-3 picks only - Buy/Pass? Why? (150 words each)
+IV. ACTIONS: Top 3 specific moves this week
 
-1. INVESTMENT THESIS (2-3 sentences)
-    - Core case with SPECIFIC numbers from articles
-    - Example: "CEG operates 7 nuclear plants (per Article [1])."
-    AI datacenter demand growing 40% anually (Morgan Stanley via macro news).
-    Trading at P/E 21 vs sector average 15."
-
-2.  SUPPORTING EVIDENCE
-    - Cite at least 2 specific articles by number:[1], [2], etc.
-    - Extract KEY FACTS: percentages, dollar amounts, timelines
-    - Cross-check: Do articles agree or contradict each other?
-
-3. SECTOR CONTEXT & CROSS-REFERENCES
-    - Is this stock-specific or industry-wide trend?
-    - Check peers: Are they mentioned in macro news?
-    - Supplier/customer signals: Any related company news?
-    - Example: "META datacenter announcemnet + hitachi transformer
-    shortage (macro news [3] = CEG has pricing power "
-
-4. BULL CASE (Assuem stock RISES)
-    - 3 strongest reasons with evidence
-    - Expected return : "X% because..."
-    - Timeframe: X months or weeks
-    - Catalysts: What truly drives this, backed by evidence and logic?
-
-5. BEAR CASE (Assume stock FALLS)
-    - 3 strongest reasons with evidence
-    - Expected return : "X% because..."
-    - What would trigger a scenario like this, using evidence and logic
-    - Be brutally honest about what could go wrong
-
-6.  VALUATION ASSESSMENT
-    - Current vs Historical (if mentioned in articles)
-    - vs peers (if comparison data available)
-    - Expensive / Far / Cheap ? Support with evidence
-
-7. FINAL RECOMMENDATION
-    - Action: BUY / SELL / HOLD / WAIT
-    - Conviction : X/10 (explain why not 10/10)
-    - Positon size: "X% of cash" or "Add Y shares"
-    - Entry strategy: "Buy now" vs "Wait for dip to $X"
-    - Exit condiitions: "Take profit at $X" or "Stop loss at $X"
-    - Timeline: Near-term (0-3mo) / Medium (3-12mo) / Long (1-3yr)
-
-8. RISK FACTORS
-    - Quantify: "If x happens, expect -Y%"
-    - Macro risks affecting this position
-    - Company-specific risks
-
-🚨 CRITICAL NON-NEGOTIABLE RULES:
-
-    -   SPECIFITY: Every claim needs a number or source
-        ❌ "Gold is rallying"
-        ✅ "Gold is up 19% since September per macro news [4], Goldman targets $4900 "
-    
-    -   HONESTY: If data is limited, say so
-        ❌ Making up analyst targets
-        ✅ "Insufficient valuation data in articles - recommend caution"
-     
-    -   BALANCE: Bull and bear cases should have equal depth
-        ❌ 500 words bull, 50 words bear
-        ✅ Balanced analysis showing non biased perspectives
-    
-    -   CONNECTIONS: Link related news
-        ❌ Analyzing each stock in isolation
-        ✅  "META datacenter news + NVDA chip demand + CEG power = sector trend"
-
-    -   ACTIONABILITY: Be specific about what to do
-        ❌  "Consider buying"
-        ✅  "Buy 5-10 shares (~$1,800 - 3,600)"       if market dips 3% this week"
-
-=== OUTPUT STRUCUTRE ===
-
-I. MARKET OVERVIEW
-    - Macro sentimnet and key themes
-    - How current conditions affect THIS portfolio specifically
-
-II. HOLDINGS ANALYSIS
-    For each position you own:
-    - Hold / Add / Trim / Sell?
-    - Complete analysis per format above
-
-III. WATCHLIST OPPORTUNITIES
-    For each watchlist stock:
-    - Buy / Pass / Wait for dip?
-    - Complete analysis per format above
-
-IV. PORTFOLIO CONSTRUCTION
-    - Cash allocation assessment (currently {cash_pct:.1f}%)
-    - Diversification analysis
-    - Overall risk assessment
-
-V. IMMEDIATE ACTION ITEMS
-    - Top 3 specific actions with priority (3 minimum)
-    - Timeline: This week / This month / This quarter
-
-Remember : You are competing with professional analysts. Match their rigor using the tools that you have
+REQUIREMENTS:
+- Cite fundamentals + articles by number
+- If insufficient data, say so
+- Quantify: "+X% if Y" or "Stop -Z%"
+- Conviction: X/10 with reason
 """
 
     return prompt
 
 
 def call_openai(prompt, api_key=None):
-    """
-    Send prompt to OpenAI GPT-4o and get response
-
-    Args:
-        prompt (str): Formatted prompt
-        api_key (str): OpenAI API key (or set OPENAI_API_KEY env var)
-
-    Returns:
-        str: AI advisor response
-    """
-    if api_key is None:
-        api_key = os.getenv("OPENAI_API_KEY")
-
-    if not api_key:
-        return """
-⚠️  ERROR: OpenAI API key not found!
-
-Please set your API key:
-  Windows: setx OPENAI_API_KEY "your-key-here"
-  Mac/Linux: export OPENAI_API_KEY="your-key-here"
-
-Or pass it directly: get_ai_advice(portfolio, openai_key="your-key")
-"""
-
-    try:
-        client = OpenAI(api_key=api_key)
-
-        print("🤖 Sending to OpenAI 5-mini...\n")
-
-        response = client.chat.completions.create(
-            model="gpt-5-mini-2025-08-07",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice. Always cite your sources. Never make up data. If information is missing, acknowledge it.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_completion_tokens=2000,
-        )
-        advice = response.choices[0].message.content
-        print(
-            f"DEBUG: Got response, length: {len(advice) if advice else 0}"
-        )  # ADD THIS
-        return advice
-
-    except Exception as e:
-        return f"⚠️  Error calling OpenAI API: {str(e)}"
-
-
-def call_openai(prompt, api_key=None):
-    """Send prompt to OpenAI and get response"""
+    """Send prompt to OpenAI GPT-4o-mini"""
     if api_key is None:
         api_key = os.getenv("OPENAI_API_KEY")
 
@@ -732,32 +627,24 @@ def call_openai(prompt, api_key=None):
     try:
         client = OpenAI(api_key=api_key)
 
-        print("🤖 Sending to OpenAI GPT-5-mini...\n")
+        print("🤖 Sending to OpenAI GPT-4o-mini...\n")
 
         response = client.chat.completions.create(
-            model="gpt-5-mini-2025-08-07",
+            model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice.",
+                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice. Always cite your sources. Never make up data.",
                 },
                 {"role": "user", "content": prompt},
             ],
-            max_completion_tokens=16000,
+            temperature=0.7,
+            max_tokens=2000,
         )
 
-        # DEBUG: Print full response object
-        print(f"DEBUG: Response object: {response}")
-        print(f"DEBUG: Choices: {response.choices}")
-        print(f"DEBUG: Message: {response.choices[0].message}")
-
-        advice = response.choices[0].message.content
-        print(f"DEBUG: Content length: {len(advice) if advice else 0}")
-        return advice
+        return response.choices[0].message.content
 
     except Exception as e:
-        print(f"DEBUG: Exception type: {type(e)}")
-        print(f"DEBUG: Exception details: {str(e)}")
         return f"⚠️  Error calling OpenAI API: {str(e)}"
 
 
@@ -768,7 +655,7 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
     Args:
         portfolio: Portfolio object
         openai_key (str): Optional OpenAI API key
-        fred_key (str): Optional FRED API key for VIX data
+        fred_key (str): Optional FRED API key
 
     Returns:
         str: Formatted AI advice
