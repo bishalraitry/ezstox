@@ -1,3 +1,7 @@
 openbb
 matplotlib
 pandas
+feedparser
+requests
+fredapi
+openai
