@@ -442,6 +442,8 @@ def gather_stock_data(portfolio):
 
     print("\n✅ Stock data gathered\n")
 
+    print(f"DEBUG - {symbol} fundamentals: {fundamentals_data[symbol]}")
+
     return {"prices": prices, "news": news_data, "fundamentals": fundamentals_data}
 
 
@@ -686,5 +688,12 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
         print()
     else:
         print("⚠️ No advice generated")
+
+    articles = get_stock_news("CEG", limit=8)
+    for i, article in enumerate(articles):
+        print(f"\n--- Article {i+1} ---")
+        print(f"Title: {article['title']}")
+        print(f"URL: {article['url']}")
+        print(f"Date: {article['date']}")
 
     return advice
