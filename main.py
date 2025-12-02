@@ -12,8 +12,8 @@ from src.reporter import (print_header, print_news, print_position,
                           print_summary)
 
 
-def main():
-    """Main application logic"""
+def main_portfolio_only():
+    """Show portfolio and watchlist only (no news)"""
 
     print_header()
 
@@ -27,7 +27,7 @@ def main():
     all_symbols = portfolio.get_all_symbols()
 
     if not all_symbols:
-        print("⚠️ No holdings or watchlist found!")
+        print("No holdings or watchlist found!")
         print("Edit data/portfolio.txt and data/watchlist.txt\n")
         return
 
@@ -37,7 +37,7 @@ def main():
 
     # What I own
     if owned_symbols:
-        print("💼 HOLDINGS\n" + "-" * 50)
+        print("HOLDINGS\n" + "-" * 50)
         for symbol in owned_symbols:
             if symbol in current_prices:
                 position = portfolio.calculate_position(symbol, current_prices[symbol])
@@ -46,13 +46,99 @@ def main():
         totals = portfolio.get_total_value(current_prices)
         print_summary(totals)
     else:
-        print("💼 Your PORTFOLIO\n" + "-" * 50)
+        print("PORTFOLIO\n" + "-" * 50)
         print("No holdings (100% Cash)")
         print(f"Cash: ${portfolio.cash:,.2f}\n")
-    
+
     # Watchlist
     if watched_symbols:
-        print("\n👀 WATCHLIST\n" + "-" * 50)
+        print("\nWATCHLIST\n" + "-" * 50)
+        for symbol in watched_symbols:
+            if symbol in current_prices:
+                price = current_prices[symbol]
+                print(f"{symbol}: ${price:.2f}")
+        print()
+
+
+def main_news_only():
+    """Show news for portfolio and watchlist stocks"""
+
+    print_header()
+
+    # Load portfolio and watchlist
+    portfolio = Portfolio()
+    print()
+
+    owned_symbols = portfolio.get_portfolio_symbols()
+    watched_symbols = portfolio.get_watchlist_symbols()
+
+    all_symbols = portfolio.get_all_symbols()
+
+    if not all_symbols:
+        print("No holdings or watchlist found!")
+        print("Edit data/portfolio.txt and data/watchlist.txt\n")
+        return
+
+    print("Fetching news articles...")
+    print()
+
+    # News
+    print("NEWS UPDATES\n" + "-" * 50)
+
+    if owned_symbols:
+        print("Your Holdings:")
+        for symbol in owned_symbols:
+            articles = get_stock_news(symbol, limit=2)
+            print_news(symbol, articles)
+
+    if watched_symbols:
+        print("\nWatchlist:")
+        for symbol in watched_symbols:
+            articles = get_stock_news(symbol, limit=2)
+            print_news(symbol, articles)
+
+
+def main():
+    """Main application logic with news"""
+
+    print_header()
+
+    # Load portfolio and watchlist
+    portfolio = Portfolio()
+    print()
+
+    owned_symbols = portfolio.get_portfolio_symbols()
+    watched_symbols = portfolio.get_watchlist_symbols()
+
+    all_symbols = portfolio.get_all_symbols()
+
+    if not all_symbols:
+        print("No holdings or watchlist found!")
+        print("Edit data/portfolio.txt and data/watchlist.txt\n")
+        return
+
+    print("Fetching current prices...")
+    current_prices = get_multiple_prices(all_symbols)
+    print()
+
+    # What I own
+    if owned_symbols:
+        print("HOLDINGS\n" + "-" * 50)
+        for symbol in owned_symbols:
+            if symbol in current_prices:
+                position = portfolio.calculate_position(symbol, current_prices[symbol])
+                print_position(position)
+
+        totals = portfolio.get_total_value(current_prices)
+        print_summary(totals)
+    else:
+        print("PORTFOLIO\n" + "-" * 50)
+        print("No holdings (100% Cash)")
+        print(f"Cash: ${portfolio.cash:,.2f}\n")
+
+    # Watchlist
+    if watched_symbols:
+        print("\nWATCHLIST\n" + "-" * 50)
         for symbol in watched_symbols:
             if symbol in current_prices:
                 price = current_prices[symbol]
@@ -60,7 +146,7 @@ def main():
         print()
 
     # News
-    print("\n📰 NEWS UPDATES\n" + "-" * 50)
+    print("\nNEWS UPDATES\n" + "-" * 50)
 
     if owned_symbols:
         print("Your Holdings:")
@@ -80,7 +166,7 @@ def main_with_ai():
     try:
         from src.llm_advisor import get_ai_advice
     except Exception as e:
-        print(f"❌ Error importing AI advisor: {e}")
+        print(f"Error importing AI advisor: {e}")
         return
 
     # Load portfolio
@@ -103,7 +189,7 @@ if __name__ == "__main__":
             from menu import run_menu
             run_menu()
         except ImportError:
-            print("⚠️  Menu module not found. Running portfolio view instead.\n")
+            print("Menu module not found. Running portfolio view instead.\n")
             main()
     elif "--ai-advice" in sys.argv:
         # Direct AI advice

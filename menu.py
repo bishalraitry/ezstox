@@ -24,11 +24,12 @@ def print_menu():
     """Display main menu options"""
     print("What would you like to do?\n")
     print("  1. View Portfolio & Watchlist")
-    print("  2. Get AI Investment Advice (Full Analysis)")
-    print("  3. Edit Portfolio")
-    print("  4. Edit Watchlist")
-    print("  5. Edit Cash Balance")
-    print("  6. Settings & Info")
+    print("  2. View News for Stocks")
+    print("  3. Get AI Investment Advice (Full Analysis)")
+    print("  4. Edit Portfolio")
+    print("  5. Edit Watchlist")
+    print("  6. Edit Cash Balance")
+    print("  7. Settings & Info")
     print("  0. Exit")
     print()
 
@@ -36,10 +37,10 @@ def print_menu():
 def get_user_choice():
     """Get and validate user input"""
     while True:
-        choice = input("Enter your choice (0-6): ").strip()
-        if choice in ['0', '1', '2', '3', '4', '5', '6']:
+        choice = input("Enter your choice (0-7): ").strip()
+        if choice in ['0', '1', '2', '3', '4', '5', '6', '7']:
             return choice
-        print("Invalid choice. Please enter a number between 0-6.\n")
+        print("Invalid choice. Please enter a number between 0-7.\n")
 
 
 def pause():
@@ -200,11 +201,17 @@ def run_menu():
         elif choice == '1':
             print("\nLoading portfolio view...\n")
             # Import here to avoid circular imports
-            from main import main as show_portfolio
-            show_portfolio()
+            from main import main_portfolio_only
+            main_portfolio_only()
             pause()
-        
+
         elif choice == '2':
+            print("\nFetching news articles...\n")
+            from main import main_news_only
+            main_news_only()
+            pause()
+
+        elif choice == '3':
             print("\nStarting AI analysis...\n")
             print("This will take 60-90 seconds...")
             print("   - Fetching stock data & news")
@@ -218,26 +225,26 @@ def run_menu():
             else:
                 print("\nCancelled")
             pause()
-        
-        elif choice == '3':
+
+        elif choice == '4':
             clear_screen()
             print_banner()
             edit_file('data/portfolio.txt', 'Portfolio Holdings')
             pause()
-        
-        elif choice == '4':
+
+        elif choice == '5':
             clear_screen()
             print_banner()
             edit_file('data/watchlist.txt', 'Watchlist')
             pause()
-        
-        elif choice == '5':
+
+        elif choice == '6':
             clear_screen()
             print_banner()
             edit_file('data/cash.txt', 'Cash Balance')
             pause()
-        
-        elif choice == '6':
+
+        elif choice == '7':
             show_settings()
 
 
