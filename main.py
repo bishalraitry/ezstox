@@ -1,6 +1,6 @@
 """
 ezstox - Simple portfolio tracker
-Entry
+Entry point with menu support
 """
 
 import sys
@@ -28,7 +28,7 @@ def main():
 
     if not all_symbols:
         print("⚠️ No holdings or watchlist found!")
-        print("Edit data/portolio.txt and data/watchlist.txt\n")
+        print("Edit data/portfolio.txt and data/watchlist.txt\n")
         return
 
     print("Fetching current prices...")
@@ -48,9 +48,9 @@ def main():
     else:
         print("💼 Your PORTFOLIO\n" + "-" * 50)
         print("No holdings (100% Cash)")
-        print(f"Cash: %{portfolio.cash:,.2f}\n")
+        print(f"Cash: ${portfolio.cash:,.2f}\n")
+    
     # Watchlist
-
     if watched_symbols:
         print("\n👀 WATCHLIST\n" + "-" * 50)
         for symbol in watched_symbols:
@@ -77,34 +77,44 @@ def main():
 
 def main_with_ai():
     """Run portfolio tracker with AI advisor"""
-    print("DEBUG: Entered main_with_ai()")
-
     try:
         from src.llm_advisor import get_ai_advice
-
-        print("DEBUG: Successfully imported get_ai_advice")
     except Exception as e:
-        print(f"DEBUG: Import failed: {e}")
+        print(f"❌ Error importing AI advisor: {e}")
         return
 
     # Load portfolio
-    print("DEBUG: Loading portfolio...")
     portfolio = Portfolio()
-    print("DEBUG: Portfolio loaded")
 
     # Get AI advice
-    print("DEBUG: Calling get_ai_advice()...")
     advice = get_ai_advice(portfolio)
 
     # Display advice
-    print(advice)
-    print()
+    if advice:
+        print(advice)
+        print()
 
 
 if __name__ == "__main__":
-    if "--ai-advice" in sys.argv:
-        print("DEBUG: AI advice flag detected!")
+    # Check if running from menu or command line
+    if "--menu" in sys.argv or len(sys.argv) == 1:
+        # Run interactive menu by default
+        try:
+            from menu import run_menu
+            run_menu()
+        except ImportError:
+            print("⚠️  Menu module not found. Running portfolio view instead.\n")
+            main()
+    elif "--ai-advice" in sys.argv:
+        # Direct AI advice
         main_with_ai()
-    else:
-        print("DEBUGL Running normal mode")
+    elif "--portfolio" in sys.argv:
+        # Direct portfolio view
         main()
+    else:
+        # Default to menu
+        try:
+            from menu import run_menu
+            run_menu()
+        except ImportError:
+            main()
