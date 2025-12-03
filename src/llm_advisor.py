@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 
 import feedparser
 import requests
+import yfinance as yf
 from fredapi import Fred
 from newspaper import Article
 from openai import OpenAI
@@ -57,8 +58,8 @@ STOCK_CONTEXT = {
     "IGLN.L": {
         "sector": "commodity_gold",
         "asset_type": "physical_gold_etc",
-        "description": "iShares Physical Gold ETC",
-        "note": "NOT a stock - tracks physical gold price, NOT clean energy",
+        "description": "iShares Physical Gold ETC (NOT Invesco)",
+        "note": "Tracks physical gold price - verify provider name before citing",
     },
     "VUSA.L": {
         "sector": "index_fund_sp500",
@@ -138,7 +139,7 @@ def get_article_content(url, max_chars=3000, retries=2):
 
 def get_stock_fundamentals(symbol):
     """
-    Get key financial metrics from OpenBB
+    Get key financial metrics using yfinance directly
 
     Args:
         symbol (str): Stock ticker
@@ -146,32 +147,36 @@ def get_stock_fundamentals(symbol):
     Returns:
         dict: Financial metrics or empty dict if unavailable
     """
-    from openbb import obb
-
     fundamentals = {}
 
     try:
-        # Get key metrics from Yahoo Finance
-        quote = obb.equity.price.quote(symbol, provider="yfinance")
-        quote_df = quote.to_df()
+        # Use yfinance directly for better reliability
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
 
-        if len(quote_df) > 0:
-            q = quote_df.iloc[0]
+        # Extract available metrics with proper field names
+        fundamentals["pe_ratio"] = info.get("trailingPE")
+        fundamentals["forward_pe"] = info.get("forwardPE")
+        fundamentals["market_cap"] = info.get("marketCap")
+        fundamentals["beta"] = info.get("beta")
+        fundamentals["dividend_yield"] = info.get("dividendYield")
 
-            # Extract available metrics
-            fundamentals["pe_ratio"] = q.get("pe_ttm")
-            fundamentals["forward_pe"] = q.get("forward_pe")
-            fundamentals["market_cap"] = q.get("market_cap")
-            fundamentals["beta"] = q.get("beta")
-            fundamentals["dividend_yield"] = q.get("dividend_yield")
-            fundamentals["fifty_two_week_high"] = q.get("fifty_two_week_high")
-            fundamentals["fifty_two_week_low"] = q.get("fifty_two_week_low")
-            fundamentals["analyst_target_mean"] = q.get("price_target_average")
-            fundamentals["analyst_target_high"] = q.get("price_target_high")
-            fundamentals["analyst_target_low"] = q.get("price_target_low")
+        # 52-week range
+        fundamentals["fifty_two_week_high"] = info.get("fiftyTwoWeekHigh")
+        fundamentals["fifty_two_week_low"] = info.get("fiftyTwoWeekLow")
+
+        # Analyst targets
+        fundamentals["analyst_target_mean"] = info.get("targetMeanPrice")
+        fundamentals["analyst_target_high"] = info.get("targetHighPrice")
+        fundamentals["analyst_target_low"] = info.get("targetLowPrice")
+
+        # Additional useful metrics
+        fundamentals["price_to_book"] = info.get("priceToBook")
+        fundamentals["revenue_growth"] = info.get("revenueGrowth")
+        fundamentals["earnings_growth"] = info.get("earningsGrowth")
 
     except Exception as e:
-        print(f"  ⚠️  Could not fetch fundamentals for {symbol}: {str(e)[:50]}")
+        print(f"  Warning: Could not fetch fundamentals for {symbol}: {str(e)[:50]}")
 
     return fundamentals
 
@@ -417,7 +422,8 @@ def gather_stock_data(portfolio):
 
     owned = portfolio.get_portfolio_symbols()
     watched = portfolio.get_watchlist_symbols()
-    all_symbols = owned + watched
+    # Remove duplicates (stocks in both owned and watched)
+    all_symbols = list(dict.fromkeys(owned + watched))
 
     # Get current prices
     print("\n💰 Fetching current prices...")
@@ -476,20 +482,25 @@ def format_llm_prompt(portfolio, stock_data, macro_data):
 
 🎯 CRITICAL RULES:
 
-1. DATA SUFFICIENCY:
+1. DATA SUFFICIENCY & ACCURACY:
    - Stock with <3 of 5 articles: Mark "LIMITED DATA - Lower conviction"
    - Stock with 0-1 articles + no fundamentals: "INSUFFICIENT DATA - CANNOT ANALYZE"
+   - ONLY cite articles that match the stock symbol (e.g., only use [AAPL-#] articles for AAPL analysis)
+   - NEVER cite articles about a different company
    - NEVER make recommendations without evidence
+   - NEVER invent specific analyst targets or price numbers not in the data
 
 2. PRIORITIZE FUNDAMENTALS:
-   - Analyst targets > Article speculation
-   - P/E ratios > Vague sector trends
-   - Actual earnings > Generic news
+   - Use EXACT P/E ratios from fundamentals data (do not round or estimate)
+   - If fundamentals show "None" or missing data, state "P/E: N/A" explicitly
+   - Analyst targets: ONLY cite if explicitly provided in fundamentals
+   - If no analyst target is provided, say "No analyst target available"
 
-3. CITE SOURCES:
-   - "Fundamentals show P/E of X"
-   - "Article [1] states Y"
-   - "Analyst target: $Z"
+3. CITE SOURCES ACCURATELY:
+   - Use exact numbers from fundamentals data
+   - Reference specific article claims: "Article [SYMBOL-#] reports..."
+   - Never cite brokerages (JPMorgan, Goldman, etc.) unless explicitly mentioned in articles
+   - If uncertain about a data point, acknowledge the limitation
 
 4. CONCISE OUTPUT:
    - Max 1,500 words total
@@ -522,23 +533,32 @@ HOLDINGS:
 
             # Fundamentals
             fund = fundamentals.get(symbol, {})
-            if fund.get("pe_ratio"):
-                prompt += f"  P/E: {fund['pe_ratio']:.1f}"
-            if fund.get("analyst_target_mean"):
+
+            # P/E ratio with explicit None handling
+            pe_val = fund.get("pe_ratio")
+            if pe_val is not None:
+                prompt += f"  P/E: {pe_val:.2f}"
+            else:
+                prompt += f"  P/E: N/A"
+
+            # Analyst target with explicit None handling
+            target_val = fund.get("analyst_target_mean")
+            if target_val is not None and target_val > 0:
                 upside = (
-                    (
-                        (fund["analyst_target_mean"] - current_price)
-                        / current_price
-                        * 100
-                    )
+                    ((target_val - current_price) / current_price * 100)
                     if current_price > 0
                     else 0
                 )
-                prompt += (
-                    f" | Target: ${fund['analyst_target_mean']:.0f} ({upside:+.0f}%)"
-                )
-            if fund.get("fifty_two_week_high"):
-                prompt += f" | 52w: ${fund['fifty_two_week_low']:.0f}-${fund['fifty_two_week_high']:.0f}"
+                prompt += f" | Analyst Target: ${target_val:.2f} ({upside:+.1f}%)"
+            else:
+                prompt += f" | Analyst Target: N/A"
+
+            # 52-week range
+            high_val = fund.get("fifty_two_week_high")
+            low_val = fund.get("fifty_two_week_low")
+            if high_val is not None and low_val is not None:
+                prompt += f" | 52w: ${low_val:.2f}-${high_val:.2f}"
+
             prompt += "\n"
 
     total_value = portfolio.cash + sum(
@@ -558,17 +578,22 @@ HOLDINGS:
             prompt += f"{symbol} ({sector}): ${price}"
 
             fund = fundamentals.get(symbol, {})
-            if fund.get("pe_ratio"):
-                prompt += f" | P/E: {fund['pe_ratio']:.1f}"
-            if fund.get("analyst_target_mean"):
-                upside = (
-                    ((fund["analyst_target_mean"] - price) / price * 100)
-                    if price > 0
-                    else 0
-                )
-                prompt += (
-                    f" | Target: ${fund['analyst_target_mean']:.0f} ({upside:+.0f}%)"
-                )
+
+            # P/E ratio
+            pe_val = fund.get("pe_ratio")
+            if pe_val is not None:
+                prompt += f" | P/E: {pe_val:.2f}"
+            else:
+                prompt += f" | P/E: N/A"
+
+            # Analyst target
+            target_val = fund.get("analyst_target_mean")
+            if target_val is not None and target_val > 0:
+                upside = ((target_val - price) / price * 100) if price > 0 else 0
+                prompt += f" | Target: ${target_val:.2f} ({upside:+.1f}%)"
+            else:
+                prompt += f" | Target: N/A"
+
             prompt += "\n"
 
     # Macro
@@ -600,8 +625,8 @@ HOLDINGS:
         prompt += f"\n{symbol} {quality} ({available_count}/5 articles):\n"
 
         if available_count > 0:
-            for i, article in enumerate(stock_news[:3], 1):
-                prompt += f"[{i}] {article['title']}\n"
+            for i, article in enumerate(stock_news[:5], 1):
+                prompt += f"[{symbol}-{i}] {article['title']}\n"
                 content = article.get("full_content", "")
                 if content and content not in [
                     "Content unavailable",
@@ -624,10 +649,14 @@ III. WATCHLIST: Top 2-3 picks only - Buy/Pass? Why? (150 words each)
 IV. ACTIONS: Top 3 specific moves this week
 
 REQUIREMENTS:
-- Cite fundamentals + articles by number
-- If insufficient data, say so
-- Quantify: "+X% if Y" or "Stop -Z%"
-- Conviction: X/10 with reason
+- Cite articles using the format [SYMBOL-#] (e.g., [CEG-1], [AAPL-2])
+- ONLY reference articles that match the stock symbol you're analyzing
+- Use EXACT P/E ratios from the data above - do not round or estimate
+- ONLY cite analyst targets if explicitly shown as "Target: $X" above
+- Do NOT invent brokerage names (JPMorgan, Goldman, etc.) unless mentioned in articles
+- If data shows "N/A", explicitly state it in your analysis
+- Quantify upside/downside conservatively based on fundamentals
+- Conviction: X/10 with clear reasoning tied to data quality
 """
 
     return prompt
@@ -704,11 +733,26 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
     else:
         print("⚠️ No advice generated")
 
-    articles = get_stock_news("CEG", limit=8)
-    for i, article in enumerate(articles):
-        print(f"\n--- Article {i+1} ---")
-        print(f"Title: {article['title']}")
-        print(f"URL: {article['url']}")
-        print(f"Date: {article['date']}")
+    # Debug: Show article quality per stock
+    print("\n" + "=" * 60)
+    print("ARTICLE SCRAPING SUMMARY")
+    print("=" * 60)
+
+    owned = portfolio.get_portfolio_symbols()
+    watched = portfolio.get_watchlist_symbols()
+    # Remove duplicates (stocks in both owned and watched)
+    all_symbols = list(dict.fromkeys(owned + watched))
+
+    for symbol in all_symbols:
+        stock_news = stock_data['news'].get(symbol, [])
+        scraped_count = sum(
+            1 for a in stock_news
+            if a.get("full_content") not in [None, "Content unavailable", "No URL available"]
+        )
+        print(f"\n{symbol}: {scraped_count}/{len(stock_news)} articles scraped")
+        for i, article in enumerate(stock_news[:5], 1):
+            has_content = article.get("full_content") not in [None, "Content unavailable", "No URL available"]
+            status = "✓" if has_content else "✗"
+            print(f"  [{symbol}-{i}] {status} {article.get('title', 'No title')[:60]}...")
 
     return advice
