@@ -5,3 +5,4 @@ feedparser
 requests
 fredapi
 openai
+newspaper3k

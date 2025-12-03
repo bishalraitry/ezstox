@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import feedparser
 import requests
 from fredapi import Fred
+from newspaper import Article
 from openai import OpenAI
 
 from src.data_fetcher import get_multiple_prices, get_stock_news
@@ -81,42 +82,56 @@ STOCK_CONTEXT = {
 # =============================================================================
 
 
+def scrape_with_jina(url, max_chars=3000, timeout=20):
+    """Try scraping with Jina AI"""
+    try:
+        jina_url = f"https://r.jina.ai/{url}"
+        headers = {"X-Return-Format": "text"}
+        response = requests.get(jina_url, headers=headers, timeout=timeout)
+
+        if response.status_code == 200:
+            content = response.text[:max_chars]
+            if len(content) > 100:
+                return content
+        return None
+    except Exception:
+        return None
+
+
+def scrape_with_newspaper(url, max_chars=3000):
+    """Fallback scraper using newspaper3k"""
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+
+        if article.text and len(article.text) > 100:
+            return article.text[:max_chars]
+        return None
+    except Exception:
+        return None
+
+
 def get_article_content(url, max_chars=3000, retries=2):
-    """
-    Fetch full article content using Jina AI Reader with retry logic
-
-    Args:
-        url (str): Article URL
-        max_chars (int): Maximum characters to return
-        retries (int): Number of retry attempts
-
-    Returns:
-        str: Clean article text or None if failed
-    """
+    """Hybrid scraper: tries Jina first, then newspaper3k"""
     if not url or url == "No link available":
         return None
 
+    # Try Jina first (fast)
     for attempt in range(retries):
-        try:
-            jina_url = f"https://r.jina.ai/{url}"
-            headers = {"X-Return-Format": "text"}
+        content = scrape_with_jina(url, max_chars)
+        if content:
+            return content
+        if attempt < retries - 1:
+            time.sleep(2)
 
-            response = requests.get(jina_url, headers=headers, timeout=20)
-
-            if response.status_code == 200:
-                content = response.text[:max_chars]
-                if len(content) > 100:  # Minimum viable content
-                    return content
-
-            # Wait before retry
-            if attempt < retries - 1:
-                time.sleep(2)
-
-        except Exception as e:
-            if attempt < retries - 1:
-                time.sleep(3)
-                continue
-            print(f"  ⚠️  Failed after {retries} attempts: {str(e)[:50]}")
+    # Fallback to newspaper3k (reliable)
+    for attempt in range(retries):
+        content = scrape_with_newspaper(url, max_chars)
+        if content:
+            return content
+        if attempt < retries - 1:
+            time.sleep(1)
 
     return None
 
