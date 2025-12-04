@@ -91,11 +91,11 @@ def print_news(symbol, articles):
 
         # Format date if it's a datetime object
 
-        print(f"    • {title}")
-        print(f"    📅 {date}")
+        print(f"    - {title}")
+        print(f"      Date: {date}")
 
         if url and url != 'No link available':
-            print (f"   🔗 {url}")
+            print(f"      Link: {url}")
 
 
         print()

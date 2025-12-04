@@ -17,71 +17,6 @@ from openai import OpenAI
 
 from src.data_fetcher import get_multiple_prices, get_stock_news
 
-# =============================================================================
-# STOCK CONTEXT - Add your stocks here as you expand
-# =============================================================================
-
-STOCK_CONTEXT = {
-    "META": {
-        "sector": "social_media_cloud",
-        "known_suppliers": ["NVDA", "AMD"],
-        "known_peers": ["GOOGL", "MSFT", "AMZN"],
-        "known_customers": ["advertisers"],
-    },
-    "CEG": {
-        "sector": "utility_nuclear",
-        "known_peers": ["VST", "NEE", "DUK"],
-        "known_customers": ["datacenters", "industrial"],
-    },
-    "AAPL": {
-        "sector": "consumer_tech",
-        "known_suppliers": ["TSM", "FOXCONN"],
-        "known_peers": ["MSFT", "GOOGL"],
-        "known_products": ["iPhone", "Mac", "Services"],
-    },
-    "TSLA": {
-        "sector": "automotive_ev",
-        "known_peers": ["RIVN", "LCID", "F", "GM"],
-        "known_suppliers": ["battery_manufacturers"],
-    },
-    "NVDA": {
-        "sector": "semiconductors_ai",
-        "known_suppliers": ["TSM", "ASML"],
-        "known_customers": ["META", "MSFT", "GOOGL", "AMZN"],
-        "known_peers": ["AMD", "INTC"],
-    },
-    "TSM": {
-        "sector": "semiconductors_foundry",
-        "known_customers": ["AAPL", "NVDA", "AMD"],
-        "known_peers": ["INTC", "SMSN"],
-    },
-    "IGLN.L": {
-        "sector": "commodity_gold",
-        "asset_type": "physical_gold_etc",
-        "description": "iShares Physical Gold ETC (NOT Invesco)",
-        "note": "Tracks physical gold price - verify provider name before citing",
-    },
-    "VUSA.L": {
-        "sector": "index_fund_sp500",
-        "asset_type": "etf",
-        "description": "Vanguard S&P 500 UCITS ETF",
-        "note": "Tracks S&P 500 index",
-    },
-    "GLD": {
-        "sector": "commodity_gold",
-        "asset_type": "gold_etf",
-        "description": "SPDR Gold Shares",
-        "known_peers": ["IAU", "IGLN.L"],
-    },
-    "SLV": {
-        "sector": "commodity_silver",
-        "asset_type": "silver_etf",
-        "description": "iShares Silver Trust",
-    },
-}
-
-# =============================================================================
-
 
 def scrape_with_jina(url, max_chars=3000, timeout=20):
     """Try scraping with Jina AI"""
@@ -154,6 +89,10 @@ def get_stock_fundamentals(symbol):
         ticker = yf.Ticker(symbol)
         info = ticker.info
 
+        # Asset type detection (EQUITY, ETF, MUTUALFUND, etc.)
+        fundamentals["quote_type"] = info.get("quoteType", "EQUITY")
+        fundamentals["long_name"] = info.get("longName", symbol)
+
         # Extract available metrics with proper field names
         fundamentals["pe_ratio"] = info.get("trailingPE")
         fundamentals["forward_pe"] = info.get("forwardPE")
@@ -165,7 +104,7 @@ def get_stock_fundamentals(symbol):
         fundamentals["fifty_two_week_high"] = info.get("fiftyTwoWeekHigh")
         fundamentals["fifty_two_week_low"] = info.get("fiftyTwoWeekLow")
 
-        # Analyst targets
+        # Analyst targets (for equities)
         fundamentals["analyst_target_mean"] = info.get("targetMeanPrice")
         fundamentals["analyst_target_high"] = info.get("targetHighPrice")
         fundamentals["analyst_target_low"] = info.get("targetLowPrice")
@@ -174,6 +113,11 @@ def get_stock_fundamentals(symbol):
         fundamentals["price_to_book"] = info.get("priceToBook")
         fundamentals["revenue_growth"] = info.get("revenueGrowth")
         fundamentals["earnings_growth"] = info.get("earningsGrowth")
+
+        # ETF-specific metrics
+        if fundamentals["quote_type"] == "ETF":
+            fundamentals["category"] = info.get("category")
+            fundamentals["total_assets"] = info.get("totalAssets")
 
     except Exception as e:
         print(f"  Warning: Could not fetch fundamentals for {symbol}: {str(e)[:50]}")
@@ -194,7 +138,7 @@ def validate_percentage_change(change_pct, timeframe="5 days"):
     """
     if abs(change_pct) > 10:
         print(
-            f"  ⚠️  Suspicious data: {change_pct:.2f}% change in {timeframe} (likely data error)"
+            f"  WARNING: Suspicious data: {change_pct:.2f}% change in {timeframe} (likely data error)"
         )
         return False, None
 
@@ -231,7 +175,7 @@ def get_financial_news_rss(limit=10):
         return articles
 
     except Exception as e:
-        print(f"  ⚠️  Error fetching RSS news: {e}")
+        print(f"  WARNING: Error fetching RSS news: {e}")
         return []
 
 
@@ -249,7 +193,7 @@ def get_vix_from_fred(fred_api_key=None):
         fred_api_key = os.getenv("FRED_API_KEY")
 
     if not fred_api_key:
-        print("  ⚠️  FRED API key not found (VIX unavailable)")
+        print("  WARNING: FRED API key not found (VIX unavailable)")
         return {"level": "N/A", "sentiment": "N/A"}
 
     try:
@@ -273,7 +217,7 @@ def get_vix_from_fred(fred_api_key=None):
             return {"level": "N/A", "sentiment": "N/A"}
 
     except Exception as e:
-        print(f"  ⚠️  Error fetching VIX from FRED: {e}")
+        print(f"  WARNING: Error fetching VIX from FRED: {e}")
         return {"level": "N/A", "sentiment": "N/A"}
 
 
@@ -289,30 +233,31 @@ def get_macro_data(fred_api_key=None):
     """
     from openbb import obb
 
-    print("\n🌍 Fetching macro market context...")
+    print("\n[MACRO DATA] Fetching market context...")
 
     macro = {}
 
     # 1. Financial news from Google RSS
-    print("  • Fetching global financial news (RSS)...")
+    print("  - Fetching global financial news (RSS)...")
     try:
         articles = get_financial_news_rss(limit=10)
 
-        print("    → Scraping top articles...")
+        print("    - Scraping top articles...")
         for article in articles[:5]:
             url = article.get("url")
             if url:
                 content = get_article_content(url)
                 article["content"] = content if content else "Content unavailable"
+                time.sleep(1.5)
 
         macro["world_news"] = articles
-        print(f"    ✅ Got {len(articles)} financial news articles")
+        print(f"    [OK] Retrieved {len(articles)} financial news articles")
     except Exception as e:
-        print(f"    ⚠️  Error fetching news: {e}")
+        print(f"    WARNING: Error fetching news: {e}")
         macro["world_news"] = []
 
     # 2. Market indices
-    print("  • Fetching market indices...")
+    print("  - Fetching market indices...")
     indices = {}
 
     end_date = datetime.now()
@@ -352,21 +297,21 @@ def get_macro_data(fred_api_key=None):
                 indices[symbol] = {"name": name, "current": "N/A", "change_5d": "N/A"}
 
         except Exception as e:
-            print(f"    ⚠️  {symbol} fetch failed: {e}")
+            print(f"    WARNING: {symbol} fetch failed: {e}")
             indices[symbol] = {"name": name, "current": "N/A", "change_5d": "N/A"}
 
     macro["indices"] = indices
 
     # 3. VIX
-    print("  • Fetching VIX from FRED...")
+    print("  - Fetching VIX from FRED...")
     try:
         macro["vix"] = get_vix_from_fred(fred_api_key)
     except Exception as e:
-        print(f"    ⚠️  VIX fetch failed: {e}")
+        print(f"    WARNING: VIX fetch failed: {e}")
         macro["vix"] = {"level": "N/A", "sentiment": "N/A"}
 
     # 4. Tech sector
-    print("  • Fetching tech sector data...")
+    print("  - Fetching tech sector data...")
     try:
         tech_data = obb.equity.price.historical(
             "XLK",
@@ -401,10 +346,10 @@ def get_macro_data(fred_api_key=None):
         macro["tech_sector"]["news"] = tech_articles
 
     except Exception as e:
-        print(f"    ⚠️  Tech sector fetch failed: {e}")
+        print(f"    WARNING: Tech sector fetch failed: {e}")
         macro["tech_sector"] = {"current": "N/A", "change_5d": "N/A", "news": []}
 
-    print("✅ Macro context gathered\n")
+    print("[OK] Macro context gathered\n")
     return macro
 
 
@@ -418,7 +363,7 @@ def gather_stock_data(portfolio):
     Returns:
         dict: Prices, news, and fundamentals
     """
-    print("📊 Gathering stock-specific data...")
+    print("[STOCK DATA] Gathering stock-specific data...")
 
     owned = portfolio.get_portfolio_symbols()
     watched = portfolio.get_watchlist_symbols()
@@ -426,42 +371,56 @@ def gather_stock_data(portfolio):
     all_symbols = list(dict.fromkeys(owned + watched))
 
     # Get current prices
-    print("\n💰 Fetching current prices...")
+    print("\n[PRICES] Fetching current prices...")
     prices = get_multiple_prices(all_symbols)
 
     # Get fundamentals + news
-    print("\n📊 Fetching fundamentals + news...")
+    print("\n[FUNDAMENTALS] Fetching fundamentals + news...")
     news_data = {}
     fundamentals_data = {}
 
     for symbol in all_symbols:
-        print(f"\n  {symbol}:")
+        print(f"  {symbol}...", end=" ", flush=True)
 
         # Get fundamentals
-        print(f"    → Fetching fundamentals...")
         fundamentals_data[symbol] = get_stock_fundamentals(symbol)
+        quote_type = fundamentals_data[symbol].get("quote_type", "EQUITY")
 
-        # Get 8 news articles
-        articles = get_stock_news(symbol, limit=8)
+        # ETFs need less news - they track indices/commodities
+        if quote_type == "ETF":
+            # Get only 2 articles for ETFs (lighter scraping)
+            articles = get_stock_news(symbol, limit=2)
+            scraped_count = 0
+            for i, article in enumerate(articles[:2], 1):
+                url = article.get("url")
+                if url and url != "No link available":
+                    content = get_article_content(url, retries=1)  # Fewer retries
+                    article["full_content"] = content if content else "Content unavailable"
+                    if content:
+                        scraped_count += 1
+                    time.sleep(1.5)
+                else:
+                    article["full_content"] = "No URL available"
+            news_data[symbol] = articles[:2]
+            print(f"{scraped_count}/2 articles [ETF]")
+        else:
+            # Full scraping for equities
+            articles = get_stock_news(symbol, limit=8)
+            scraped_count = 0
+            for i, article in enumerate(articles[:5], 1):
+                url = article.get("url")
+                if url and url != "No link available":
+                    content = get_article_content(url, retries=2)
+                    article["full_content"] = content if content else "Content unavailable"
+                    if content:
+                        scraped_count += 1
+                    time.sleep(1.5)
+                else:
+                    article["full_content"] = "No URL available"
+            news_data[symbol] = articles[:5]
+            print(f"{scraped_count}/5 articles")
 
-        # Scrape top 5
-        scraped_count = 0
-        for i, article in enumerate(articles[:5], 1):
-            url = article.get("url")
-            if url and url != "No link available":
-                print(f"    → Scraping article {i}/5...")
-                content = get_article_content(url, retries=2)
-                article["full_content"] = content if content else "Content unavailable"
-                if content:
-                    scraped_count += 1
-                time.sleep(1.5)  # Rate limiting
-            else:
-                article["full_content"] = "No URL available"
-
-        news_data[symbol] = articles[:5]
-        print(f"    ✅ {scraped_count}/5 articles scraped successfully")
-
-    print("\n✅ Stock data gathered\n")
+    print("\n[OK] Stock data gathered\n")
 
     print(f"DEBUG - {symbol} fundamentals: {fundamentals_data[symbol]}")
 
@@ -480,11 +439,12 @@ def format_llm_prompt(portfolio, stock_data, macro_data):
 
     prompt = f"""You are an expert financial analyst providing institutional-quality investment research.
 
-🎯 CRITICAL RULES:
+CRITICAL RULES:
 
 1. DATA SUFFICIENCY & ACCURACY:
-   - Stock with <3 of 5 articles: Mark "LIMITED DATA - Lower conviction"
-   - Stock with 0-1 articles + no fundamentals: "INSUFFICIENT DATA - CANNOT ANALYZE"
+   - EQUITIES with <3 of 5 articles: Mark "LIMITED DATA - Lower conviction"
+   - EQUITIES with 0-1 articles + no fundamentals: "INSUFFICIENT DATA - CANNOT ANALYZE"
+   - ETFs: Do NOT require 5 articles - analyze using macro data and underlying index/commodity trends
    - ONLY cite articles that match the stock symbol (e.g., only use [AAPL-#] articles for AAPL analysis)
    - NEVER cite articles about a different company
    - NEVER make recommendations without evidence
@@ -526,38 +486,61 @@ HOLDINGS:
             gain_loss = current_value - total_cost
             gain_loss_pct = (gain_loss / total_cost * 100) if total_cost > 0 else 0
 
-            context = STOCK_CONTEXT.get(symbol, {})
-            sector = context.get("sector", "Unknown")
-
-            prompt += f"\n{symbol} ({sector}): {holding['shares']} sh @ ${holding['cost_basis']:.2f} → ${current_price:.2f} | P&L: ${gain_loss:.2f} ({gain_loss_pct:+.1f}%)\n"
-
-            # Fundamentals
+            # Get fundamentals and asset type
             fund = fundamentals.get(symbol, {})
+            quote_type = fund.get("quote_type", "EQUITY")
+            long_name = fund.get("long_name", symbol)
 
-            # P/E ratio with explicit None handling
-            pe_val = fund.get("pe_ratio")
-            if pe_val is not None:
-                prompt += f"  P/E: {pe_val:.2f}"
+            # Show asset type in header
+            type_label = f"[{quote_type}]" if quote_type != "EQUITY" else ""
+
+            prompt += f"\n{symbol} {type_label}: {holding['shares']} sh @ ${holding['cost_basis']:.2f} -> ${current_price:.2f} | P&L: ${gain_loss:.2f} ({gain_loss_pct:+.1f}%)\n"
+            prompt += f"  {long_name}\n"
+
+            # Conditional metrics based on asset type
+            if quote_type == "EQUITY":
+                # P/E ratio with explicit None handling
+                pe_val = fund.get("pe_ratio")
+                if pe_val is not None:
+                    prompt += f"  P/E: {pe_val:.2f}"
+                else:
+                    prompt += f"  P/E: N/A"
+
+                # Analyst target with explicit None handling
+                target_val = fund.get("analyst_target_mean")
+                if target_val is not None and target_val > 0:
+                    upside = (
+                        ((target_val - current_price) / current_price * 100)
+                        if current_price > 0
+                        else 0
+                    )
+                    prompt += f" | Analyst Target: ${target_val:.2f} ({upside:+.1f}%)"
+                else:
+                    prompt += f" | Analyst Target: N/A"
+
+                # 52-week range
+                high_val = fund.get("fifty_two_week_high")
+                low_val = fund.get("fifty_two_week_low")
+                if high_val is not None and low_val is not None:
+                    prompt += f" | 52w: ${low_val:.2f}-${high_val:.2f}"
+
+            elif quote_type == "ETF":
+                # ETF-specific metrics
+                high_val = fund.get("fifty_two_week_high")
+                low_val = fund.get("fifty_two_week_low")
+                if high_val is not None and low_val is not None:
+                    prompt += f"  52w Range: ${low_val:.2f}-${high_val:.2f}"
+
+                category = fund.get("category")
+                if category:
+                    prompt += f" | Category: {category}"
+
             else:
-                prompt += f"  P/E: N/A"
-
-            # Analyst target with explicit None handling
-            target_val = fund.get("analyst_target_mean")
-            if target_val is not None and target_val > 0:
-                upside = (
-                    ((target_val - current_price) / current_price * 100)
-                    if current_price > 0
-                    else 0
-                )
-                prompt += f" | Analyst Target: ${target_val:.2f} ({upside:+.1f}%)"
-            else:
-                prompt += f" | Analyst Target: N/A"
-
-            # 52-week range
-            high_val = fund.get("fifty_two_week_high")
-            low_val = fund.get("fifty_two_week_low")
-            if high_val is not None and low_val is not None:
-                prompt += f" | 52w: ${low_val:.2f}-${high_val:.2f}"
+                # Commodities, currencies, etc - just show 52-week range
+                high_val = fund.get("fifty_two_week_high")
+                low_val = fund.get("fifty_two_week_low")
+                if high_val is not None and low_val is not None:
+                    prompt += f"  52w Range: ${low_val:.2f}-${high_val:.2f}"
 
             prompt += "\n"
 
@@ -573,26 +556,36 @@ HOLDINGS:
         prompt += "\nWATCHLIST:\n"
         for symbol in watched:
             price = prices.get(symbol, 0)
-            context = STOCK_CONTEXT.get(symbol, {})
-            sector = context.get("sector", "Unknown")
-            prompt += f"{symbol} ({sector}): ${price}"
-
             fund = fundamentals.get(symbol, {})
+            quote_type = fund.get("quote_type", "EQUITY")
+            long_name = fund.get("long_name", symbol)
 
-            # P/E ratio
-            pe_val = fund.get("pe_ratio")
-            if pe_val is not None:
-                prompt += f" | P/E: {pe_val:.2f}"
-            else:
-                prompt += f" | P/E: N/A"
+            type_label = f"[{quote_type}]" if quote_type != "EQUITY" else ""
+            prompt += f"{symbol} {type_label}: ${price}\n"
+            prompt += f"  {long_name}\n"
 
-            # Analyst target
-            target_val = fund.get("analyst_target_mean")
-            if target_val is not None and target_val > 0:
-                upside = ((target_val - price) / price * 100) if price > 0 else 0
-                prompt += f" | Target: ${target_val:.2f} ({upside:+.1f}%)"
-            else:
-                prompt += f" | Target: N/A"
+            # Conditional metrics based on asset type
+            if quote_type == "EQUITY":
+                # P/E ratio
+                pe_val = fund.get("pe_ratio")
+                if pe_val is not None:
+                    prompt += f"  P/E: {pe_val:.2f}"
+                else:
+                    prompt += f"  P/E: N/A"
+
+                # Analyst target
+                target_val = fund.get("analyst_target_mean")
+                if target_val is not None and target_val > 0:
+                    upside = ((target_val - price) / price * 100) if price > 0 else 0
+                    prompt += f" | Target: ${target_val:.2f} ({upside:+.1f}%)"
+                else:
+                    prompt += f" | Target: N/A"
+
+            elif quote_type == "ETF":
+                # ETF metrics
+                category = fund.get("category")
+                if category:
+                    prompt += f"  Category: {category}"
 
             prompt += "\n"
 
@@ -612,20 +605,31 @@ HOLDINGS:
 
     for symbol in owned + watched:
         stock_news = news.get(symbol, [])
+        fund = fundamentals.get(symbol, {})
+        quote_type = fund.get("quote_type", "EQUITY")
+
         available_count = sum(
             1
             for a in stock_news
             if a.get("full_content")
             not in [None, "Content unavailable", "No URL available"]
         )
-        quality = (
-            "✅" if available_count >= 3 else "⚠️" if available_count >= 1 else "❌"
-        )
 
-        prompt += f"\n{symbol} {quality} ({available_count}/5 articles):\n"
+        # Different quality thresholds for different asset types
+        if quote_type == "EQUITY":
+            quality = (
+                "[GOOD]" if available_count >= 3 else "[LIMITED]" if available_count >= 1 else "[INSUFFICIENT]"
+            )
+            expected = 5
+        else:
+            # ETFs need less data - use macro trends instead
+            quality = "[ETF - Use Macro Data]"
+            expected = 2
+
+        prompt += f"\n{symbol} {quality} ({available_count}/{expected} articles):\n"
 
         if available_count > 0:
-            for i, article in enumerate(stock_news[:5], 1):
+            for i, article in enumerate(stock_news, 1):
                 prompt += f"[{symbol}-{i}] {article['title']}\n"
                 content = article.get("full_content", "")
                 if content and content not in [
@@ -633,8 +637,18 @@ HOLDINGS:
                     "No URL available",
                 ]:
                     prompt += f"    {content[:400]}...\n"
-        else:
-            prompt += "  ❌ NO DATA - Cannot analyze\n"
+
+        # Special handling for ETFs - guide AI on what to analyze
+        if quote_type == "ETF":
+            long_name = fund.get("long_name", "")
+            if "S&P 500" in long_name or "VUSA" in symbol:
+                prompt += "  [ANALYSIS GUIDE] Track S&P 500 index (see Market Context above)\n"
+            elif "Gold" in long_name or "GLD" in symbol or "IGLN" in symbol:
+                prompt += "  [ANALYSIS GUIDE] Track gold prices - inflation hedge, safe haven demand\n"
+            elif "Silver" in long_name or "SLV" in symbol:
+                prompt += "  [ANALYSIS GUIDE] Track silver prices - industrial demand + precious metal\n"
+        elif quote_type == "EQUITY" and available_count == 0:
+            prompt += "  [INSUFFICIENT DATA] - Cannot analyze\n"
 
     # Instructions
     prompt += """
@@ -657,6 +671,18 @@ REQUIREMENTS:
 - If data shows "N/A", explicitly state it in your analysis
 - Quantify upside/downside conservatively based on fundamentals
 - Conviction: X/10 with clear reasoning tied to data quality
+
+ASSET TYPE HANDLING:
+- [EQUITY]: Analyze using P/E ratios, analyst targets, earnings growth, competitive positioning
+  * Requires 3+ articles for full conviction
+- [ETF]: Analyze based on underlying index/sector performance, NOT individual company metrics
+  * S&P 500 ETFs (VUSA): Analyze using S&P 500 performance from Market Context
+  * Gold ETFs (GLD, IGLN.L): Analyze based on gold as inflation hedge, safe haven demand, macro trends
+  * Silver ETFs (SLV): Analyze based on industrial demand + precious metal trends
+  * DO NOT say "insufficient data" for ETFs - use macro context instead
+  * DO NOT discuss P/E ratios or analyst targets for ETFs
+- [COMMODITY/CURRENCY]: Analyze based on macro trends, supply/demand, inflation hedging
+- For ETFs marked "[ETF - Use Macro Data]", you have sufficient data to provide analysis
 """
 
     return prompt
@@ -668,12 +694,12 @@ def call_openai(prompt, api_key=None):
         api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
-        return "⚠️  ERROR: OpenAI API key not found!"
+        return "ERROR: OpenAI API key not found!"
 
     try:
         client = OpenAI(api_key=api_key)
 
-        print("🤖 Sending to OpenAI GPT-4o-mini...\n")
+        print("[AI] Sending to OpenAI GPT-4o-mini...\n")
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -691,7 +717,7 @@ def call_openai(prompt, api_key=None):
         return response.choices[0].message.content
 
     except Exception as e:
-        return f"⚠️  Error calling OpenAI API: {str(e)}"
+        return f"ERROR: Failed to call OpenAI API: {str(e)}"
 
 
 def get_ai_advice(portfolio, openai_key=None, fred_key=None):
@@ -707,7 +733,7 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
         str: Formatted AI advice
     """
     print("\n" + "=" * 60)
-    print("🤖 AI FINANCIAL ADVISOR")
+    print("AI FINANCIAL ADVISOR")
     print("=" * 60)
 
     # Gather all data
@@ -715,14 +741,14 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
     macro_data = get_macro_data(fred_key)
 
     # Format prompt
-    print("📝 Formatting analysis prompt...\n")
+    print("[ANALYSIS] Formatting prompt...\n")
     prompt = format_llm_prompt(portfolio, stock_data, macro_data)
 
     # Get AI response
     advice = call_openai(prompt, openai_key)
 
     print("=" * 60)
-    print("✅ ANALYSIS COMPLETE")
+    print("ANALYSIS COMPLETE")
     print("=" * 60)
     print()
 
@@ -731,7 +757,7 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
         print(advice)
         print()
     else:
-        print("⚠️ No advice generated")
+        print("WARNING: No advice generated")
 
     # Debug: Show article quality per stock
     print("\n" + "=" * 60)
@@ -745,14 +771,20 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
 
     for symbol in all_symbols:
         stock_news = stock_data['news'].get(symbol, [])
+        fund = stock_data['fundamentals'].get(symbol, {})
+        quote_type = fund.get("quote_type", "EQUITY")
+
         scraped_count = sum(
             1 for a in stock_news
             if a.get("full_content") not in [None, "Content unavailable", "No URL available"]
         )
-        print(f"\n{symbol}: {scraped_count}/{len(stock_news)} articles scraped")
-        for i, article in enumerate(stock_news[:5], 1):
+
+        type_label = f" [{quote_type}]" if quote_type != "EQUITY" else ""
+        print(f"\n{symbol}{type_label}: {scraped_count}/{len(stock_news)} articles scraped")
+
+        for i, article in enumerate(stock_news, 1):
             has_content = article.get("full_content") not in [None, "Content unavailable", "No URL available"]
-            status = "✓" if has_content else "✗"
+            status = "[OK]" if has_content else "[--]"
             print(f"  [{symbol}-{i}] {status} {article.get('title', 'No title')[:60]}...")
 
     return advice

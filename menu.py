@@ -3,13 +3,13 @@ Terminal menu interface for ezstox
 Clean and simple menu system
 """
 
-import sys
 import os
+import sys
 
 
 def clear_screen():
     """Clear the terminal screen"""
-    os.system('clear' if os.name == 'posix' else 'cls')
+    os.system("clear" if os.name == "posix" else "cls")
 
 
 def print_banner():
@@ -38,7 +38,7 @@ def get_user_choice():
     """Get and validate user input"""
     while True:
         choice = input("Enter your choice (0-7): ").strip()
-        if choice in ['0', '1', '2', '3', '4', '5', '6', '7']:
+        if choice in ["0", "1", "2", "3", "4", "5", "6", "7"]:
             return choice
         print("Invalid choice. Please enter a number between 0-7.\n")
 
@@ -51,7 +51,7 @@ def pause():
 def confirm_action(message="Are you sure?"):
     """Ask user to confirm an action"""
     response = input(f"{message} (y/n): ").strip().lower()
-    return response in ['y', 'yes']
+    return response in ["y", "yes"]
 
 
 def show_portfolio_info():
@@ -81,67 +81,67 @@ def edit_file(filepath, file_description):
     if not os.path.exists(filepath):
         print(f"File doesn't exist yet. Creating it...")
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, 'w') as f:
-            if 'portfolio' in filepath:
+        with open(filepath, "w") as f:
+            if "portfolio" in filepath:
                 f.write("# Format: SYMBOL,SHARES,COST_BASIS\n")
                 f.write("# Example: META,1.5,700.00\n\n")
-            elif 'watchlist' in filepath:
+            elif "watchlist" in filepath:
                 f.write("# Format: One symbol per line\n")
                 f.write("# Example:\n# AAPL\n# NVDA\n\n")
-            elif 'cash' in filepath:
+            elif "cash" in filepath:
                 f.write("0")
-    
+
     # Show current contents
     print("Current contents:")
     print("-" * 50)
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         contents = f.read()
         if contents.strip():
             print(contents)
         else:
             print("(empty file)")
     print("-" * 50)
-    
+
     # Ask what to do
     print("\nWhat would you like to do?")
     print("  1. Open in text editor (nano/vim/notepad)")
     print("  2. Add a line manually")
     print("  3. View only (no changes)")
     print("  0. Cancel")
-    
+
     choice = input("\nChoice: ").strip()
-    
-    if choice == '1':
+
+    if choice == "1":
         # Open in default editor
-        editor = os.environ.get('EDITOR', 'nano' if os.name == 'posix' else 'notepad')
+        editor = os.environ.get("EDITOR", "nano" if os.name == "posix" else "notepad")
         print(f"\nOpening with {editor}...")
         os.system(f"{editor} {filepath}")
         print("\nChanges saved!")
-        
-    elif choice == '2':
+
+    elif choice == "2":
         # Manual add
         print("\nEnter line to add (or 'cancel' to abort):")
-        
-        if 'portfolio' in filepath:
+
+        if "portfolio" in filepath:
             print("Format: SYMBOL,SHARES,COST_BASIS")
             print("Example: AAPL,10,150.00")
-        elif 'watchlist' in filepath:
+        elif "watchlist" in filepath:
             print("Format: SYMBOL")
             print("Example: NVDA")
-        elif 'cash' in filepath:
+        elif "cash" in filepath:
             print("Format: Just the number")
             print("Example: 500")
-        
+
         new_line = input("\n> ").strip()
-        
-        if new_line.lower() != 'cancel' and new_line:
-            with open(filepath, 'a') as f:
+
+        if new_line.lower() != "cancel" and new_line:
+            with open(filepath, "a") as f:
                 f.write(f"\n{new_line}")
             print("\nAdded successfully!")
         else:
             print("\nCancelled")
 
-    elif choice == '3':
+    elif choice == "3":
         print("\nView only - no changes made")
 
     else:
@@ -157,8 +157,8 @@ def show_settings():
 
     # Check API keys
     print("\nAPI Keys Status:")
-    openai_key = os.getenv('OPENAI_API_KEY')
-    fred_key = os.getenv('FRED_API_KEY')
+    openai_key = os.getenv("OPENAI_API_KEY")
+    fred_key = os.getenv("FRED_API_KEY")
 
     print(f"  - OpenAI: {'Configured' if openai_key else 'Not found'}")
     print(f"  - FRED (VIX data): {'Configured' if fred_key else 'Not found'}")
@@ -173,14 +173,14 @@ def show_settings():
     show_portfolio_info()
     print("\n" + "=" * 60)
 
-    print("\nCost per AI Analysis:")
+    print("\nCost per AI Analysis (GPT-4o-mini):")
     print("  - ~$0.003-0.005 per analysis")
     print("  - 2 analyses/day = ~$0.21/month")
 
     print("\nPerformance:")
     print("  - Portfolio view: ~5 seconds")
     print("  - AI analysis: ~60-90 seconds")
-    
+
     print("\n" + "=" * 60)
     pause()
 
@@ -191,27 +191,29 @@ def run_menu():
         clear_screen()
         print_banner()
         print_menu()
-        
+
         choice = get_user_choice()
-        
-        if choice == '0':
+
+        if choice == "0":
             print("\nThanks for using ezstox! See you later.\n")
             sys.exit(0)
 
-        elif choice == '1':
+        elif choice == "1":
             print("\nLoading portfolio view...\n")
             # Import here to avoid circular imports
             from main import main_portfolio_only
+
             main_portfolio_only()
             pause()
 
-        elif choice == '2':
+        elif choice == "2":
             print("\nFetching news articles...\n")
             from main import main_news_only
+
             main_news_only()
             pause()
 
-        elif choice == '3':
+        elif choice == "3":
             print("\nStarting AI analysis...\n")
             print("This will take 60-90 seconds...")
             print("   - Fetching stock data & news")
@@ -221,36 +223,38 @@ def run_menu():
 
             if confirm_action("Ready to start?"):
                 from main import main_with_ai
+
                 main_with_ai()
             else:
                 print("\nCancelled")
             pause()
 
-        elif choice == '4':
+        elif choice == "4":
             clear_screen()
             print_banner()
-            edit_file('data/portfolio.txt', 'Portfolio Holdings')
+            edit_file("data/portfolio.txt", "Portfolio Holdings")
             pause()
 
-        elif choice == '5':
+        elif choice == "5":
             clear_screen()
             print_banner()
-            edit_file('data/watchlist.txt', 'Watchlist')
+            edit_file("data/watchlist.txt", "Watchlist")
             pause()
 
-        elif choice == '6':
+        elif choice == "6":
             clear_screen()
             print_banner()
-            edit_file('data/cash.txt', 'Cash Balance')
+            edit_file("data/cash.txt", "Cash Balance")
             pause()
 
-        elif choice == '7':
+        elif choice == "7":
             show_settings()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         run_menu()
     except KeyboardInterrupt:
         print("\n\nCaught Ctrl+C. Goodbye!\n")
         sys.exit(0)
+

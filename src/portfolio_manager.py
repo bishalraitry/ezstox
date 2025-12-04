@@ -13,10 +13,12 @@ class Portfolio:
         portfolio_file="data/portfolio.txt",
         watchlist_file="data/watchlist.txt",
         cash_file="data/cash.txt",
+        silent=False,
     ):
         self.portfolio_file = portfolio_file
         self.watchlist_file = watchlist_file
         self.cash_file = cash_file
+        self.silent = silent
 
         self.holdings = {}
         self.watchlist = []
@@ -64,9 +66,9 @@ class Portfolio:
 
                     self.holdings[symbol] = {"shares": shares, "cost_basis": cost_basis}
                 except Exception as e:
-                    print(f"⚠️  Skipping invalid portfolio line: {line}")
-        if self.holdings:
-            print(f"✅ Portfolio {len(self.holdings)} holdings")
+                    print(f"WARNING: Skipping invalid portfolio line: {line}")
+        if self.holdings and not self.silent:
+            print(f"[OK] Portfolio: {len(self.holdings)} holdings")
 
     def _load_watchlist(self):
         """Load watchlist from file"""
@@ -78,8 +80,8 @@ class Portfolio:
                 if line and not line.startswith("#"):
                     self.watchlist.append(line)
 
-        if self.watchlist:
-            print(f"✅ Watchlist: {len(self.watchlist)} stocks")
+        if self.watchlist and not self.silent:
+            print(f"[OK] Watchlist: {len(self.watchlist)} stocks")
 
     def _load_cash(self):
         """Load cash balance"""
@@ -89,7 +91,8 @@ class Portfolio:
         try:
             with open(self.cash_file, "r") as f:
                 self.cash = float(f.read().strip())
-            print(f"✅ Cash: ${self.cash:,.2f}")
+            if not self.silent:
+                print(f"[OK] Cash: ${self.cash:,.2f}")
         except:
             self.cash = 0
 

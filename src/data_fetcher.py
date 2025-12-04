@@ -104,13 +104,13 @@ def get_stock_news(symbol, limit=3):
             )
         return articles
     except Exception as e:
-        print(f"⚠️  Error fetching news for {symbol} {str(e)}")
+        print(f"WARNING: Error fetching news for {symbol} {str(e)}")
         return []
 
 
 def get_multiple_prices(symbols):
     """
-    Get prices for multiple stokcs
+    Get prices for multiple stocks
 
     Args:
         symbols (list): List of stock ticker symbols
@@ -118,12 +118,17 @@ def get_multiple_prices(symbols):
         dict: {symbol:price} mapping
     """
     prices = {}
+    failed = []
+
     for symbol in symbols:
-        print(f"Fetching {symbol}...", end=" ")
         price = get_stock_price(symbol)
         if price:
             prices[symbol] = price
-            print(f"${price}")
         else:
-            print("Failed")
+            failed.append(symbol)
+
+    # Only show summary if there were failures
+    if failed:
+        print(f"  WARNING: Failed to fetch prices for: {', '.join(failed)}")
+
     return prices

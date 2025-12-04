@@ -1,0 +1,10 @@
+# Format SYMBOL (one per line)
+
+CEG
+AAPL
+NVDA
+TSM
+AMD
+GLD
+SLV
+VUSA.L

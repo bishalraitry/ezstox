@@ -63,11 +63,8 @@ def main_portfolio_only():
 def main_news_only():
     """Show news for portfolio and watchlist stocks"""
 
-    print_header()
-
-    # Load portfolio and watchlist
-    portfolio = Portfolio()
-    print()
+    # Load portfolio and watchlist (silent mode)
+    portfolio = Portfolio(silent=True)
 
     owned_symbols = portfolio.get_portfolio_symbols()
     watched_symbols = portfolio.get_watchlist_symbols()
@@ -169,8 +166,8 @@ def main_with_ai():
         print(f"Error importing AI advisor: {e}")
         return
 
-    # Load portfolio
-    portfolio = Portfolio()
+    # Load portfolio (silent mode)
+    portfolio = Portfolio(silent=True)
 
     # Get AI advice
     advice = get_ai_advice(portfolio)
