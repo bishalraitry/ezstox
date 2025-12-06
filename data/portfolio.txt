@@ -1,4 +1,0 @@
-# Format: Symbol, Shares, Cost_Basis
-CEG,20,350
-IGLN.L,30,90
-VUSA.L,10,90

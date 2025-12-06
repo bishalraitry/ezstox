@@ -13,9 +13,10 @@ openbb_env/
 .vscode/
 .idea/
 
-# Config (keep portfolio private)
-config/portfolio.json
+# data (keep portfolio private)
+data/
 
 # OS
 .DS_Store
 Thumbs.db
+data/
