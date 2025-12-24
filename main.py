@@ -18,7 +18,7 @@ def main_portfolio_only():
     print_header()
 
     # Load portfolio and watchlist
-    portfolio = Portfolio()
+    portfolio = Portfolio(silent=True)
     print()
 
     owned_symbols = portfolio.get_portfolio_symbols()
@@ -37,7 +37,7 @@ def main_portfolio_only():
 
     # What I own
     if owned_symbols:
-        print("HOLDINGS\n" + "-" * 50)
+        print("HOLDINGS\n" + "-" * 60)
         for symbol in owned_symbols:
             if symbol in current_prices:
                 position = portfolio.calculate_position(symbol, current_prices[symbol])
@@ -46,13 +46,13 @@ def main_portfolio_only():
         totals = portfolio.get_total_value(current_prices)
         print_summary(totals)
     else:
-        print("PORTFOLIO\n" + "-" * 50)
+        print("PORTFOLIO\n" + "-" * 60)
         print("No holdings (100% Cash)")
         print(f"Cash: ${portfolio.cash:,.2f}\n")
 
     # Watchlist
     if watched_symbols:
-        print("\nWATCHLIST\n" + "-" * 50)
+        print("\nWATCHLIST\n" + "-" * 60)
         for symbol in watched_symbols:
             if symbol in current_prices:
                 price = current_prices[symbol]
@@ -80,7 +80,7 @@ def main_news_only():
     print()
 
     # News
-    print("NEWS UPDATES\n" + "-" * 50)
+    print("NEWS UPDATES\n" + "-" * 60)
 
     if owned_symbols:
         print("Your Holdings:")
@@ -101,7 +101,7 @@ def main():
     print_header()
 
     # Load portfolio and watchlist
-    portfolio = Portfolio()
+    portfolio = Portfolio(silent=True)
     print()
 
     owned_symbols = portfolio.get_portfolio_symbols()
@@ -120,7 +120,7 @@ def main():
 
     # What I own
     if owned_symbols:
-        print("HOLDINGS\n" + "-" * 50)
+        print("HOLDINGS\n" + "-" * 60)
         for symbol in owned_symbols:
             if symbol in current_prices:
                 position = portfolio.calculate_position(symbol, current_prices[symbol])
@@ -129,13 +129,13 @@ def main():
         totals = portfolio.get_total_value(current_prices)
         print_summary(totals)
     else:
-        print("PORTFOLIO\n" + "-" * 50)
+        print("PORTFOLIO\n" + "-" * 60)
         print("No holdings (100% Cash)")
         print(f"Cash: ${portfolio.cash:,.2f}\n")
 
     # Watchlist
     if watched_symbols:
-        print("\nWATCHLIST\n" + "-" * 50)
+        print("\nWATCHLIST\n" + "-" * 60)
         for symbol in watched_symbols:
             if symbol in current_prices:
                 price = current_prices[symbol]
@@ -143,7 +143,7 @@ def main():
         print()
 
     # News
-    print("\nNEWS UPDATES\n" + "-" * 50)
+    print("\nNEWS UPDATES\n" + "-" * 60)
 
     if owned_symbols:
         print("Your Holdings:")

@@ -422,8 +422,6 @@ def gather_stock_data(portfolio):
 
     print("\n[OK] Stock data gathered\n")
 
-    print(f"DEBUG - {symbol} fundamentals: {fundamentals_data[symbol]}")
-
     return {"prices": prices, "news": news_data, "fundamentals": fundamentals_data}
 
 
@@ -733,7 +731,7 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
         str: Formatted AI advice
     """
     print("\n" + "=" * 60)
-    print("AI FINANCIAL ADVISOR")
+    print("                  AI Financial Advisor")
     print("=" * 60)
 
     # Gather all data
@@ -748,20 +746,18 @@ def get_ai_advice(portfolio, openai_key=None, fred_key=None):
     advice = call_openai(prompt, openai_key)
 
     print("=" * 60)
-    print("ANALYSIS COMPLETE")
+    print("                  Analysis Complete")
     print("=" * 60)
     print()
 
-    # Print the advice
-    if advice and len(advice) > 0:
-        print(advice)
-        print()
-    else:
+    # Return the advice (caller will print it)
+    if not advice or len(advice) == 0:
         print("WARNING: No advice generated")
+        return None
 
     # Debug: Show article quality per stock
     print("\n" + "=" * 60)
-    print("ARTICLE SCRAPING SUMMARY")
+    print("               Article Scraping Summary")
     print("=" * 60)
 
     owned = portfolio.get_portfolio_symbols()

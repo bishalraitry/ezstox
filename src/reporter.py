@@ -7,10 +7,10 @@ from datetime import datetime
 
 def print_header():
     """Print application header"""
-    print("\n" + "=" * 50)
-    print("     EZSTOX - Portfolio Tracker")
-    print(f"    {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 50 + "\n")
+    print("\n" + "=" * 60)
+    print("                ezstox - Portfolio Tracker")
+    print(f"              {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60 + "\n")
 
 
 def print_position(position):
@@ -51,9 +51,9 @@ def print_summary(totals):
     Args:
         totals (dict): Portfolio total from portfolio_manger
     """
-    print("-" * 50)
+    print("-" * 60)
     print("PORTFOLIO SUMMARY")
-    print("-" * 50)
+    print("-" * 60)
     print(f"Total Invested: ${totals['total_invested']}")
     print(f"Current Value: ${totals['total_current']:.2f}")
 
@@ -68,7 +68,7 @@ def print_summary(totals):
     )
     print(f"\nCash: ${totals['cash']:.2f}")
     print(f"Portfolio Value: ${totals['portfolio_value']:.2f}")
-    print("=" * 50 + "\n")
+    print("=" * 60 + "\n")
 
 
 def print_news(symbol, articles):

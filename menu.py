@@ -15,7 +15,7 @@ def clear_screen():
 def print_banner():
     """Print simple banner"""
     print("\n" + "=" * 60)
-    print("                      EZSTOX")
+    print("                      ezstox")
     print("              Your AI Portfolio Assistant")
     print("=" * 60 + "\n")
 
@@ -93,14 +93,14 @@ def edit_file(filepath, file_description):
 
     # Show current contents
     print("Current contents:")
-    print("-" * 50)
+    print("-" * 60)
     with open(filepath, "r") as f:
         contents = f.read()
         if contents.strip():
             print(contents)
         else:
             print("(empty file)")
-    print("-" * 50)
+    print("-" * 60)
 
     # Ask what to do
     print("\nWhat would you like to do?")
