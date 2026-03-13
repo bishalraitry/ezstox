@@ -6,6 +6,7 @@ Optimized with fundamentals data + improved article scraping
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import feedparser
@@ -59,7 +60,7 @@ def get_article_content(url, max_chars=3000, retries=2):
         if content:
             return content
         if attempt < retries - 1:
-            time.sleep(2)
+            time.sleep(1)  # Balanced delay for better quality
 
     # Fallback to newspaper3k (reliable)
     for attempt in range(retries):
@@ -67,9 +68,56 @@ def get_article_content(url, max_chars=3000, retries=2):
         if content:
             return content
         if attempt < retries - 1:
-            time.sleep(1)
+            time.sleep(0.5)  # Balanced delay
 
     return None
+
+
+def scrape_article_parallel(article, retries=2):
+    """Helper function to scrape a single article (for parallel execution)"""
+    url = article.get("url")
+    if url and url != "No link available":
+        content = get_article_content(url, retries=retries)
+        article["full_content"] = content if content else "Content unavailable"
+        return article, bool(content)
+    else:
+        article["full_content"] = "No URL available"
+        return article, False
+
+
+def scrape_articles_parallel(articles, max_workers=5, retries=2):
+    """
+    Scrape multiple articles in parallel using ThreadPoolExecutor
+
+    Args:
+        articles: List of article dicts
+        max_workers: Max concurrent threads
+        retries: Number of retries per article
+
+    Returns:
+        tuple: (updated_articles, scraped_count)
+    """
+    scraped_count = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all scraping tasks
+        future_to_article = {
+            executor.submit(scrape_article_parallel, article, retries): article
+            for article in articles
+        }
+
+        # Collect results as they complete
+        for future in as_completed(future_to_article):
+            try:
+                article, success = future.result()
+                if success:
+                    scraped_count += 1
+            except Exception as e:
+                # If scraping fails, mark as unavailable
+                article = future_to_article[future]
+                article["full_content"] = "Content unavailable"
+
+    return articles, scraped_count
 
 
 def get_stock_fundamentals(symbol):
@@ -221,9 +269,51 @@ def get_vix_from_fred(fred_api_key=None):
         return {"level": "N/A", "sentiment": "N/A"}
 
 
+def fetch_index_data(symbol, name, start_date, end_date):
+    """Helper function to fetch a single index (for parallel execution)"""
+    from openbb import obb
+
+    try:
+        data = obb.equity.price.historical(
+            symbol,
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d"),
+        )
+        df = data.to_df()
+
+        if len(df) >= 2:
+            current = df["close"].iloc[-1]
+            week_ago = df["close"].iloc[0]
+            change_pct = ((current - week_ago) / week_ago) * 100
+
+            is_valid, validated_change = validate_percentage_change(
+                change_pct, "5 days"
+            )
+
+            if is_valid:
+                return symbol, {
+                    "name": name,
+                    "current": round(current, 2),
+                    "change_5d": round(validated_change, 2),
+                }
+            else:
+                return symbol, {
+                    "name": name,
+                    "current": round(current, 2),
+                    "change_5d": "Data Error",
+                }
+        else:
+            return symbol, {"name": name, "current": "N/A", "change_5d": "N/A"}
+
+    except Exception as e:
+        print(f"    WARNING: {symbol} fetch failed: {e}")
+        return symbol, {"name": name, "current": "N/A", "change_5d": "N/A"}
+
+
 def get_macro_data(fred_api_key=None):
     """
     Gather broad market context data
+    OPTIMIZED: Uses parallel processing for indices and article scraping
 
     Args:
         fred_api_key (str): FRED API key for VIX data
@@ -237,72 +327,57 @@ def get_macro_data(fred_api_key=None):
 
     macro = {}
 
-    # 1. Financial news from Google RSS
+    # 1. Financial news from Google RSS with parallel scraping
     print("  - Fetching global financial news (RSS)...")
     try:
         articles = get_financial_news_rss(limit=10)
 
-        print("    - Scraping top articles...")
-        for article in articles[:5]:
-            url = article.get("url")
-            if url:
-                content = get_article_content(url)
-                article["content"] = content if content else "Content unavailable"
-                time.sleep(1.5)
+        print("    - Scraping top articles (parallel)...")
+        articles_to_scrape = articles[:5]
+
+        # Parallel scrape with moderate workers for quality
+        articles_to_scrape, scraped_count = scrape_articles_parallel(
+            articles_to_scrape, max_workers=3, retries=2
+        )
+
+        # Update original articles list
+        for i in range(len(articles_to_scrape)):
+            articles[i] = articles_to_scrape[i]
 
         macro["world_news"] = articles
-        print(f"    [OK] Retrieved {len(articles)} financial news articles")
+        print(f"    [OK] Retrieved {len(articles)} articles ({scraped_count} scraped)")
     except Exception as e:
         print(f"    WARNING: Error fetching news: {e}")
         macro["world_news"] = []
 
-    # 2. Market indices
-    print("  - Fetching market indices...")
+    # 2. Market indices (parallel fetching)
+    print("  - Fetching market indices (parallel)...")
     indices = {}
 
     end_date = datetime.now()
     start_date = end_date - timedelta(days=7)
 
-    for symbol, name in [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow Jones")]:
-        try:
-            data = obb.equity.price.historical(
-                symbol,
-                start_date=start_date.strftime("%Y-%m-%d"),
-                end_date=end_date.strftime("%Y-%m-%d"),
-            )
-            df = data.to_df()
+    index_list = [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow Jones")]
 
-            if len(df) >= 2:
-                current = df["close"].iloc[-1]
-                week_ago = df["close"].iloc[0]
-                change_pct = ((current - week_ago) / week_ago) * 100
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_index = {
+            executor.submit(fetch_index_data, symbol, name, start_date, end_date): symbol
+            for symbol, name in index_list
+        }
 
-                is_valid, validated_change = validate_percentage_change(
-                    change_pct, "5 days"
-                )
-
-                if is_valid:
-                    indices[symbol] = {
-                        "name": name,
-                        "current": round(current, 2),
-                        "change_5d": round(validated_change, 2),
-                    }
-                else:
-                    indices[symbol] = {
-                        "name": name,
-                        "current": round(current, 2),
-                        "change_5d": "Data Error",
-                    }
-            else:
-                indices[symbol] = {"name": name, "current": "N/A", "change_5d": "N/A"}
-
-        except Exception as e:
-            print(f"    WARNING: {symbol} fetch failed: {e}")
-            indices[symbol] = {"name": name, "current": "N/A", "change_5d": "N/A"}
+        for future in as_completed(future_to_index):
+            try:
+                symbol, data = future.result()
+                indices[symbol] = data
+                print(f"    {symbol}... OK")
+            except Exception as e:
+                symbol = future_to_index[future]
+                print(f"    {symbol}... ERROR")
+                indices[symbol] = {"name": symbol, "current": "N/A", "change_5d": "N/A"}
 
     macro["indices"] = indices
 
-    # 3. VIX
+    # 3. VIX (parallel with tech sector)
     print("  - Fetching VIX from FRED...")
     try:
         macro["vix"] = get_vix_from_fred(fred_api_key)
@@ -356,6 +431,7 @@ def get_macro_data(fred_api_key=None):
 def gather_stock_data(portfolio):
     """
     Gather stock data: prices, news (5 articles), and fundamentals
+    OPTIMIZED: Uses parallel processing for fundamentals and article scraping
 
     Args:
         portfolio: Portfolio object
@@ -374,51 +450,62 @@ def gather_stock_data(portfolio):
     print("\n[PRICES] Fetching current prices...")
     prices = get_multiple_prices(all_symbols)
 
-    # Get fundamentals + news
-    print("\n[FUNDAMENTALS] Fetching fundamentals + news...")
-    news_data = {}
+    # Get fundamentals in parallel
+    print("\n[FUNDAMENTALS] Fetching fundamentals (parallel)...")
     fundamentals_data = {}
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_symbol = {
+            executor.submit(get_stock_fundamentals, symbol): symbol
+            for symbol in all_symbols
+        }
+
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                fundamentals_data[symbol] = future.result()
+                print(f"  {symbol}... OK")
+            except Exception as e:
+                print(f"  {symbol}... ERROR: {str(e)[:30]}")
+                fundamentals_data[symbol] = {}
+
+    # Get news with parallel scraping
+    print("\n[NEWS] Fetching news + scraping articles (parallel)...")
+    news_data = {}
 
     for symbol in all_symbols:
         print(f"  {symbol}...", end=" ", flush=True)
 
-        # Get fundamentals
-        fundamentals_data[symbol] = get_stock_fundamentals(symbol)
         quote_type = fundamentals_data[symbol].get("quote_type", "EQUITY")
 
         # ETFs need less news - they track indices/commodities
         if quote_type == "ETF":
             # Get only 2 articles for ETFs (lighter scraping)
             articles = get_stock_news(symbol, limit=2)
-            scraped_count = 0
-            for i, article in enumerate(articles[:2], 1):
-                url = article.get("url")
-                if url and url != "No link available":
-                    content = get_article_content(url, retries=1)  # Fewer retries
-                    article["full_content"] = content if content else "Content unavailable"
-                    if content:
-                        scraped_count += 1
-                    time.sleep(1.5)
-                else:
-                    article["full_content"] = "No URL available"
-            news_data[symbol] = articles[:2]
+            articles_to_scrape = articles[:2]
+
+            # Parallel scrape with conservative workers for quality
+            articles_to_scrape, scraped_count = scrape_articles_parallel(
+                articles_to_scrape, max_workers=2, retries=2
+            )
+
+            news_data[symbol] = articles_to_scrape
             print(f"{scraped_count}/2 articles [ETF]")
         else:
             # Full scraping for equities
             articles = get_stock_news(symbol, limit=8)
-            scraped_count = 0
-            for i, article in enumerate(articles[:5], 1):
-                url = article.get("url")
-                if url and url != "No link available":
-                    content = get_article_content(url, retries=2)
-                    article["full_content"] = content if content else "Content unavailable"
-                    if content:
-                        scraped_count += 1
-                    time.sleep(1.5)
-                else:
-                    article["full_content"] = "No URL available"
-            news_data[symbol] = articles[:5]
+            articles_to_scrape = articles[:5]
+
+            # Parallel scrape with moderate workers to balance speed and quality
+            articles_to_scrape, scraped_count = scrape_articles_parallel(
+                articles_to_scrape, max_workers=3, retries=2
+            )
+
+            news_data[symbol] = articles_to_scrape
             print(f"{scraped_count}/5 articles")
+
+        # Small delay between stocks to avoid overwhelming Jina API
+        time.sleep(0.5)
 
     print("\n[OK] Stock data gathered\n")
 
@@ -653,14 +740,23 @@ HOLDINGS:
 
 === YOUR ANALYSIS ===
 
-Format (max 1,500 words total):
+Format (max 2,000 words total):
 
-I. MARKET OVERVIEW (100 words)
-II. HOLDINGS: For each - Hold/Add/Trim? Why? (150 words each)
-III. WATCHLIST: Top 2-3 picks only - Buy/Pass? Why? (150 words each)
-IV. ACTIONS: Top 3 specific moves this week
+I. MARKET OVERVIEW (100-150 words)
+II. HOLDINGS: For each stock - Hold/Add/Trim? Why? (150-200 words each)
+III. WATCHLIST: Top 2-3 picks only - Buy/Pass? Why? (150-200 words each)
+IV. ACTIONS: Top 3-5 specific moves this week
 
-REQUIREMENTS:
+FORMATTING REQUIREMENTS:
+- Start each stock analysis with key metrics on separate lines:
+  Current Price: $X.XX
+  P/E: X.XX (for equities only, omit for ETFs)
+  Analyst Target: $X.XX (for equities only, omit for ETFs or if N/A)
+- Then provide detailed analysis paragraph
+- End with: Conviction: X/10 with clear reasoning
+- Use proper spacing and line breaks for readability
+
+CONTENT REQUIREMENTS:
 - Cite articles using the format [SYMBOL-#] (e.g., [CEG-1], [AAPL-2])
 - ONLY reference articles that match the stock symbol you're analyzing
 - Use EXACT P/E ratios from the data above - do not round or estimate
@@ -668,19 +764,25 @@ REQUIREMENTS:
 - Do NOT invent brokerage names (JPMorgan, Goldman, etc.) unless mentioned in articles
 - If data shows "N/A", explicitly state it in your analysis
 - Quantify upside/downside conservatively based on fundamentals
-- Conviction: X/10 with clear reasoning tied to data quality
+- Provide specific reasoning with evidence from articles or fundamentals
 
-ASSET TYPE HANDLING:
+CRITICAL - ASSET TYPE HANDLING:
 - [EQUITY]: Analyze using P/E ratios, analyst targets, earnings growth, competitive positioning
   * Requires 3+ articles for full conviction
+  * Include P/E ratio and analyst target in your metrics summary
+
 - [ETF]: Analyze based on underlying index/sector performance, NOT individual company metrics
   * S&P 500 ETFs (VUSA): Analyze using S&P 500 performance from Market Context
   * Gold ETFs (GLD, IGLN.L): Analyze based on gold as inflation hedge, safe haven demand, macro trends
   * Silver ETFs (SLV): Analyze based on industrial demand + precious metal trends
-  * DO NOT say "insufficient data" for ETFs - use macro context instead
-  * DO NOT discuss P/E ratios or analyst targets for ETFs
+  * CRITICAL: DO NOT mention "insufficient data" for ETFs - use macro context instead
+  * CRITICAL: DO NOT discuss P/E ratios for ETFs - they don't have P/E ratios
+  * CRITICAL: DO NOT discuss analyst price targets for ETFs - they track indices/commodities
+  * Focus on: underlying asset performance, macro trends, diversification benefits
+
 - [COMMODITY/CURRENCY]: Analyze based on macro trends, supply/demand, inflation hedging
-- For ETFs marked "[ETF - Use Macro Data]", you have sufficient data to provide analysis
+
+- For ETFs marked "[ETF - Use Macro Data]", you have sufficient data to provide analysis using market indices, VIX, and macro trends
 """
 
     return prompt
@@ -704,12 +806,12 @@ def call_openai(prompt, api_key=None):
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice. Always cite your sources. Never make up data.",
+                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice with detailed analysis. Always cite your sources using exact article references. Never make up data. Format responses with clear structure and comprehensive reasoning.",
                 },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.7,
-            max_tokens=2000,
+            temperature=0.6,
+            max_tokens=2500,
         )
 
         return response.choices[0].message.content
