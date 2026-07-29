@@ -87,6 +87,8 @@ This launches the interactive menu where you can:
 ezstox/
 ├── main.py              # Entry point
 ├── menu.py              # Interactive menu
+├── mcp_server.py         # MCP server exposing portfolio/data tools
+├── test_mcp_client.py    # Test client for the MCP server
 ├── src/
 │   ├── data_fetcher.py      # OpenBB API calls
 │   ├── llm_advisor.py       # AI analysis
@@ -96,4 +98,74 @@ ezstox/
     ├── portfolio.txt
     ├── watchlist.txt
     └── cash.txt
+```
+
+## MCP Server
+
+`mcp_server.py` exposes ezstox's existing portfolio and data-fetching
+logic as [Model Context Protocol](https://modelcontextprotocol.io) tools,
+using Anthropic's official `mcp` Python SDK. It wraps the existing
+`Portfolio` class and `data_fetcher` functions directly — no business
+logic was rewritten.
+
+**Tools exposed:**
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `get_portfolio` | none | holdings (shares, cost basis, live price, gain/loss), cash, total value |
+| `get_stock_price` | `symbol` | current price for a ticker |
+| `get_recent_news` | `symbol`, `limit` (default 3) | recent headlines with date/URL |
+| `get_watchlist` | none | watchlist ticker symbols |
+
+### Setup
+
+```bash
+pip install -r requirements.txt   # installs mcp[cli]==1.29.0 among others
+```
+
+The SDK version is pinned deliberately: `mcp` 2.0.0 is a ground-up rewrite
+with a different API (no `mcp.server.fastmcp.FastMCP`), so an unpinned
+install would break this server.
+
+### Run it
+
+```bash
+python mcp_server.py
+```
+
+This starts the server on the stdio transport and blocks, waiting for an
+MCP client to connect over stdin/stdout — that's expected, it's not meant
+to be run standalone in a terminal for long. Point a client at it instead:
+
+**Option A — test client (included):**
+
+```bash
+python test_mcp_client.py
+```
+
+Spawns `mcp_server.py`, lists the advertised tools, and calls all four
+with real arguments, printing each result so you can confirm they return
+real data.
+
+**Option B — MCP Inspector (official tool):**
+
+```bash
+npx @modelcontextprotocol/inspector python mcp_server.py
+```
+
+Opens a browser UI to list tools, inspect their schemas, and call them
+interactively. Requires Node.js.
+
+**Option C — Claude Desktop:** add to its MCP server config
+(`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "ezstox": {
+      "command": "python",
+      "args": ["/absolute/path/to/ezstox/mcp_server.py"]
+    }
+  }
+}
 ```

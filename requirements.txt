@@ -6,3 +6,8 @@ requests
 fredapi
 openai
 newspaper3k
+
+# MCP server (mcp_server.py). Pinned: mcp 2.0.0 is a from-scratch SDK
+# rewrite with a different API (no mcp.server.fastmcp.FastMCP), so an
+# unpinned install would break this server.
+mcp[cli]==1.29.0
