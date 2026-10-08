@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""
+ezstox launcher - the only command you need.
+
+    ./ezstox              interactive app
+    ./ezstox dashboard    jump straight to a screen (see ./ezstox --help)
+
+On first run this creates a private virtual environment in .venv/ using
+the newest Python 3.9+ it can find, installs requirements.txt into it,
+then starts the app. Later runs start instantly; dependencies are only
+reinstalled when requirements.txt changes. Nothing needs activating.
+
+Windows: run `python ezstox` instead of `./ezstox`.
+"""
+
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+VENV = ROOT / ".venv"
+REQUIREMENTS = ROOT / "requirements.txt"
+STAMP = VENV / ".requirements.sha256"
+VENV_PYTHON = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+MIN_VERSION = (3, 9)
+
+
+def say(message):
+    print(f"\033[38;5;111m◆\033[0m {message}", flush=True)
+
+
+def fail(message):
+    print(f"\033[31m✗\033[0m {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def find_python():
+    """Prefer the newest installed Python 3, falling back to the one running us."""
+    for minor in range(14, MIN_VERSION[1] - 1, -1):
+        candidate = shutil.which(f"python3.{minor}")
+        if candidate:
+            return candidate
+    if sys.version_info >= MIN_VERSION:
+        return sys.executable
+    fail(
+        f"ezstox needs Python {MIN_VERSION[0]}.{MIN_VERSION[1]}+ "
+        f"(found {sys.version.split()[0]}). Install it from python.org and rerun."
+    )
+
+
+def requirements_digest():
+    return hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest()
+
+
+def ensure_environment():
+    if not VENV_PYTHON.exists():
+        python = find_python()
+        say(f"First run: creating a private environment in .venv/ ({python})")
+        subprocess.run([python, "-m", "venv", str(VENV)], check=True)
+
+    digest = requirements_digest()
+    if STAMP.exists() and STAMP.read_text().strip() == digest:
+        return
+
+    say("Installing dependencies (one-off, takes about a minute)...")
+    pip = [str(VENV_PYTHON), "-m", "pip", "--disable-pip-version-check", "-q"]
+    try:
+        subprocess.run(pip + ["install", "--upgrade", "pip"], check=True)
+        subprocess.run(pip + ["install", "-r", str(REQUIREMENTS)], check=True)
+    except subprocess.CalledProcessError:
+        fail("Dependency install failed - see the pip output above.")
+    STAMP.write_text(digest)
+    say("Ready.\n")
+
+
+def main():
+    try:
+        ensure_environment()
+    except KeyboardInterrupt:
+        fail("Setup interrupted - rerun ./ezstox to finish.")
+
+    args = [str(VENV_PYTHON), str(ROOT / "main.py"), *sys.argv[1:]]
+    if os.name == "nt":
+        sys.exit(subprocess.call(args))
+    os.execv(args[0], args)
+
+
+if __name__ == "__main__":
+    main()

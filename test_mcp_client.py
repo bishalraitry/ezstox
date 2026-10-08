@@ -7,21 +7,27 @@ host like Claude Desktop would use), lists the tools the server
 advertises, and calls each one with real arguments. Run it to confirm
 all four tools genuinely return real data end-to-end:
 
-    python test_mcp_client.py
+    .venv/bin/python test_mcp_client.py
 
 For interactive poking instead of a scripted run, use the official
 MCP Inspector:
 
-    npx @modelcontextprotocol/inspector python mcp_server.py
+    npx @modelcontextprotocol/inspector .venv/bin/python mcp_server.py
 """
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-SERVER_PARAMS = StdioServerParameters(command="python3", args=["mcp_server.py"])
+# Same interpreter that runs this script (e.g. .venv/bin/python), so the
+# server sees the same installed dependencies.
+SERVER_PARAMS = StdioServerParameters(
+    command=sys.executable, args=[str(Path(__file__).resolve().parent / "mcp_server.py")]
+)
 
 
 def _print_result(result):

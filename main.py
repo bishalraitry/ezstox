@@ -1,203 +1,74 @@
 """
-ezstox - Simple portfolio tracker
-Entry point with menu support
+ezstox - portfolio tracker & AI advisor for the terminal.
+
+Start it with ./ezstox (which sets everything up on first run). Running
+`python main.py` directly also works once dependencies are installed.
+
+    ./ezstox                  interactive menu
+    ./ezstox dashboard        holdings, P&L and watchlist
+    ./ezstox news [TICKER]    headlines for your stocks, or one ticker
+    ./ezstox lookup TICKER    quote, key stats and news for any ticker
+    ./ezstox ai               full AI analysis of your portfolio
 """
 
+import argparse
 import sys
 
-from src.data_fetcher import get_multiple_prices, get_stock_news
-from src.llm_advisor import get_ai_advice
-from src.portfolio_manager import Portfolio
-from src.reporter import (print_header, print_news, print_position,
-                          print_summary)
+try:
+    from src import app
+    from src.portfolio_manager import Portfolio
+    from src.ui import console
+except ImportError as e:
+    sys.exit(f"Missing dependency ({e.name}). Start ezstox with ./ezstox and it will install everything for you.")
+
+# Old flags from earlier versions keep working
+LEGACY_FLAGS = {"--portfolio": "dashboard", "--ai-advice": "ai", "--menu": "menu"}
 
 
-def main_portfolio_only():
-    """Show portfolio and watchlist only (no news)"""
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="ezstox",
+        description="Portfolio tracker & AI advisor for the terminal. Run with no arguments for the interactive menu.",
+    )
+    commands = parser.add_subparsers(dest="command", metavar="command")
+    commands.add_parser("menu", help="interactive menu (default)")
+    commands.add_parser("dashboard", help="holdings, P&L and watchlist")
+    news = commands.add_parser("news", help="headlines for your stocks, or one ticker")
+    news.add_argument("symbol", nargs="?", help="ticker, e.g. AAPL (default: all your stocks)")
+    lookup = commands.add_parser("lookup", help="quote, key stats and news for any ticker")
+    lookup.add_argument("symbol", help="ticker, e.g. NVDA")
+    commands.add_parser("ai", help="full AI analysis of your portfolio")
+    commands.add_parser("reports", help="browse saved AI analyses")
+    return parser.parse_args([LEGACY_FLAGS.get(arg, arg) for arg in argv])
 
-    print_header()
 
-    # Load portfolio and watchlist
-    portfolio = Portfolio(silent=True)
-    print()
+def main(argv=None):
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    command = args.command or "menu"
 
-    owned_symbols = portfolio.get_portfolio_symbols()
-    watched_symbols = portfolio.get_watchlist_symbols()
-
-    all_symbols = portfolio.get_all_symbols()
-
-    if not all_symbols:
-        print("No holdings or watchlist found!")
-        print("Edit data/portfolio.txt and data/watchlist.txt\n")
+    if command == "menu":
+        app.run_menu()
         return
 
-    print("Fetching current prices...")
-    current_prices = get_multiple_prices(all_symbols)
-    print()
+    portfolio = Portfolio()
+    for warning in portfolio.warnings:
+        console.print(f"[warn]![/] {warning}")
 
-    # What I own
-    if owned_symbols:
-        print("HOLDINGS\n" + "-" * 60)
-        for symbol in owned_symbols:
-            if symbol in current_prices:
-                position = portfolio.calculate_position(symbol, current_prices[symbol])
-                print_position(position)
-
-        totals = portfolio.get_total_value(current_prices)
-        print_summary(totals)
-    else:
-        print("PORTFOLIO\n" + "-" * 60)
-        print("No holdings (100% Cash)")
-        print(f"Cash: ${portfolio.cash:,.2f}\n")
-
-    # Watchlist
-    if watched_symbols:
-        print("\nWATCHLIST\n" + "-" * 60)
-        for symbol in watched_symbols:
-            if symbol in current_prices:
-                price = current_prices[symbol]
-                print(f"{symbol}: ${price:.2f}")
-        print()
-
-
-def main_news_only():
-    """Show news for portfolio and watchlist stocks"""
-
-    # Load portfolio and watchlist (silent mode)
-    portfolio = Portfolio(silent=True)
-
-    owned_symbols = portfolio.get_portfolio_symbols()
-    watched_symbols = portfolio.get_watchlist_symbols()
-
-    all_symbols = portfolio.get_all_symbols()
-
-    if not all_symbols:
-        print("No holdings or watchlist found!")
-        print("Edit data/portfolio.txt and data/watchlist.txt\n")
-        return
-
-    print("Fetching news articles...")
-    print()
-
-    # News
-    print("NEWS UPDATES\n" + "-" * 60)
-
-    if owned_symbols:
-        print("Your Holdings:")
-        for symbol in owned_symbols:
-            articles = get_stock_news(symbol, limit=2)
-            print_news(symbol, articles)
-
-    if watched_symbols:
-        print("\nWatchlist:")
-        for symbol in watched_symbols:
-            articles = get_stock_news(symbol, limit=2)
-            print_news(symbol, articles)
-
-
-def main():
-    """Main application logic with news"""
-
-    print_header()
-
-    # Load portfolio and watchlist
-    portfolio = Portfolio(silent=True)
-    print()
-
-    owned_symbols = portfolio.get_portfolio_symbols()
-    watched_symbols = portfolio.get_watchlist_symbols()
-
-    all_symbols = portfolio.get_all_symbols()
-
-    if not all_symbols:
-        print("No holdings or watchlist found!")
-        print("Edit data/portfolio.txt and data/watchlist.txt\n")
-        return
-
-    print("Fetching current prices...")
-    current_prices = get_multiple_prices(all_symbols)
-    print()
-
-    # What I own
-    if owned_symbols:
-        print("HOLDINGS\n" + "-" * 60)
-        for symbol in owned_symbols:
-            if symbol in current_prices:
-                position = portfolio.calculate_position(symbol, current_prices[symbol])
-                print_position(position)
-
-        totals = portfolio.get_total_value(current_prices)
-        print_summary(totals)
-    else:
-        print("PORTFOLIO\n" + "-" * 60)
-        print("No holdings (100% Cash)")
-        print(f"Cash: ${portfolio.cash:,.2f}\n")
-
-    # Watchlist
-    if watched_symbols:
-        print("\nWATCHLIST\n" + "-" * 60)
-        for symbol in watched_symbols:
-            if symbol in current_prices:
-                price = current_prices[symbol]
-                print(f"{symbol}: ${price:.2f}")
-        print()
-
-    # News
-    print("\nNEWS UPDATES\n" + "-" * 60)
-
-    if owned_symbols:
-        print("Your Holdings:")
-        for symbol in owned_symbols:
-            articles = get_stock_news(symbol, limit=2)
-            print_news(symbol, articles)
-
-    if watched_symbols:
-        print("\nWatchlist:")
-        for symbol in watched_symbols:
-            articles = get_stock_news(symbol, limit=2)
-            print_news(symbol, articles)
-
-
-def main_with_ai():
-    """Run portfolio tracker with AI advisor"""
-    try:
-        from src.llm_advisor import get_ai_advice
-    except Exception as e:
-        print(f"Error importing AI advisor: {e}")
-        return
-
-    # Load portfolio (silent mode)
-    portfolio = Portfolio(silent=True)
-
-    # Get AI advice
-    advice = get_ai_advice(portfolio)
-
-    # Display advice
-    if advice:
-        print(advice)
-        print()
+    if command == "dashboard":
+        app.dashboard(portfolio)
+    elif command == "news":
+        app.news(portfolio, symbol=args.symbol.upper() if args.symbol else None, ask=False)
+    elif command == "lookup":
+        app.lookup(portfolio, symbol=args.symbol.upper(), offer_add=False)
+    elif command == "ai":
+        app.ai_analysis(portfolio, confirm=False)
+    elif command == "reports":
+        app.reports(portfolio)
 
 
 if __name__ == "__main__":
-    # Check if running from menu or command line
-    if "--menu" in sys.argv or len(sys.argv) == 1:
-        # Run interactive menu by default
-        try:
-            from menu import run_menu
-            run_menu()
-        except ImportError:
-            print("Menu module not found. Running portfolio view instead.\n")
-            main()
-    elif "--ai-advice" in sys.argv:
-        # Direct AI advice
-        main_with_ai()
-    elif "--portfolio" in sys.argv:
-        # Direct portfolio view
+    try:
         main()
-    else:
-        # Default to menu
-        try:
-            from menu import run_menu
-            run_menu()
-        except ImportError:
-            main()
+    except (KeyboardInterrupt, EOFError):
+        console.print("\n[muted]Interrupted.[/]")
+        sys.exit(130)
