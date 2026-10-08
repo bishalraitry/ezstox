@@ -1,169 +1,113 @@
 # ezstox
 
-Terminal-based portfolio tracker with AI investment advisor
+A portfolio tracker and AI investment advisor that lives in your terminal.
 
-## Features
+- **Dashboard**: holdings, live P&L, today's move, allocation weights and 1-month trend sparklines
+- **News**: latest headlines for all your stocks, or any single ticker, as clickable links
+- **Lookup**: quote, key stats, analyst target, 52-week range and news for any ticker
+- **AI analysis**: an OpenAI-powered review of your whole portfolio, grounded in fundamentals, full news articles and market context, with a source list of real URLs
+- **Manage portfolio**: add, update and remove holdings, watchlist symbols and cash from inside the app
+- **Reports**: every AI analysis is saved as Markdown and can be reopened later
+- **MCP server**: exposes your portfolio and market data as tools to any MCP client (e.g. Claude Desktop)
 
-- Track portfolio holdings with P&L calculations
-- Monitor watchlist stocks
-- Live stock prices via OpenBB
-- Recent news articles for your stocks
-- AI investment advisor powered by OpenAI GPT-4o-mini
-- Automatic asset type detection (stocks, ETFs, commodities)
-- Interactive menu system
+## Quick start
 
-## Setup
-
-### 1. Install Dependencies
+You only need Python 3.9 or newer.
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+git clone https://github.com/bishalraitry/ezstox.git
+cd ezstox
+./ezstox
 ```
 
-### 2. Set Up API Keys
+That's it. On the first run, `./ezstox` creates a private environment in `.venv/`, installs everything (about a minute), and starts the app. After that it starts instantly. There's nothing to activate and nothing to add to your shell config. It reinstalls dependencies on its own whenever `requirements.txt` changes.
 
-Add these to your shell config (`~/.zshrc` or `~/.bashrc`):
+On Windows, run `python ezstox` instead of `./ezstox`.
+
+**Run it from anywhere:** symlink the launcher onto your PATH:
 
 ```bash
-export OPENAI_API_KEY='your-openai-key'
-export FRED_API_KEY='your-fred-key'  # Optional - for VIX data
+ln -s "$(pwd)/ezstox" /usr/local/bin/ezstox
+ezstox
 ```
 
-Then reload: `source ~/.zshrc`
+## Using it
 
-### 3. Create Data Files
-
-Create a `data/` directory with your portfolio information:
-
-**data/portfolio.txt**
-```
-# Format: SYMBOL,SHARES,COST_BASIS
-# Example:
-AAPL,10,150.00
-NVDA,5,200.00
-```
-
-**data/watchlist.txt**
-```
-# Format: One symbol per line
-# Example:
-TSLA
-AMD
-META
-```
-
-**data/cash.txt**
-```
-1000
-```
-
-### 4. Run
+`./ezstox` opens the interactive menu. You can also jump straight to a screen:
 
 ```bash
-python main.py
+./ezstox dashboard        # holdings, P&L and watchlist
+./ezstox news             # headlines for all your stocks
+./ezstox news NVDA        # headlines for one ticker
+./ezstox lookup MSFT      # quote, key stats and news for any ticker
+./ezstox ai               # full AI analysis
+./ezstox reports          # reopen a saved analysis
 ```
 
-This launches the interactive menu where you can:
-1. View Portfolio & Watchlist
-2. View News for Stocks
-3. Get AI Investment Advice (Full Analysis)
-4. Edit Portfolio
-5. Edit Watchlist
-6. Edit Cash Balance
-7. Settings & Info
+### Your portfolio
 
-## Usage Notes
+Add holdings, watchlist symbols and cash from **Manage portfolio** in the menu. Your data is stored as plain text in `data/` (git-ignored, so it stays private), and you can edit those files by hand too:
 
-- **AI Analysis**: Costs ~$0.003-0.005 per run (~$0.21/month for 2x daily use)
-- **Performance**: Portfolio view ~5 seconds, AI analysis ~60-90 seconds
-- **Asset Types**: Automatically detects stocks, ETFs, and commodities
-- **ETF Handling**: Analyzes ETFs based on underlying index/commodity trends instead of company metrics
+| File | Format |
+|---|---|
+| `data/portfolio.txt` | `SYMBOL,SHARES,AVG_COST`, one holding per line, e.g. `AAPL,10,150` |
+| `data/watchlist.txt` | one symbol per line |
+| `data/cash.txt` | a single number |
 
-## File Structure
+London-listed tickers end in `.L` (e.g. `VUSA.L`).
+
+### AI analysis
+
+AI analysis needs an OpenAI API key ([get one here](https://platform.openai.com/api-keys)). The app asks for it the first time you run an analysis, or you can set it in **Settings**. It's stored in `.env` in the project folder (git-ignored). A run with the default `gpt-4o-mini` model costs about $0.003–0.005, and you can change the model in Settings.
+
+Optional: a [Jina Reader](https://jina.ai/reader) key raises the article-scraping rate limit. The free tier works without one.
+
+## How it works
 
 ```
-ezstox/
-├── main.py              # Entry point
-├── menu.py              # Interactive menu
-├── mcp_server.py         # MCP server exposing portfolio/data tools
-├── test_mcp_client.py    # Test client for the MCP server
-├── src/
-│   ├── data_fetcher.py      # OpenBB API calls
-│   ├── llm_advisor.py       # AI analysis
-│   ├── portfolio_manager.py # Portfolio data handling
-│   └── reporter.py          # Output formatting
-└── data/                # Your portfolio data (not in git)
-    ├── portfolio.txt
-    ├── watchlist.txt
-    └── cash.txt
+ezstox                 launcher: sets up .venv on first run, then starts main.py
+main.py                entry point: interactive menu + command-line shortcuts
+mcp_server.py          MCP server exposing portfolio and market data as tools
+test_mcp_client.py     test client that calls every MCP tool
+src/
+├── app.py             screens and menu
+├── ui.py              Rich components: theme, tables, tiles, sparklines, progress
+├── data_fetcher.py    prices, news and fundamentals (yfinance), cached and parallel
+├── portfolio_manager.py   holdings, watchlist and cash; reads/writes data/
+├── llm_advisor.py     AI pipeline: gather → read articles → analyse → sources
+└── config.py          paths, .env settings
 ```
 
-## MCP Server
+- **Fast startup:** heavy libraries load only when a screen needs them, so the menu appears instantly.
+- **Parallel fetching:** prices, news and fundamentals for all your symbols are fetched concurrently and cached for 2 minutes, so moving between screens doesn't refetch anything.
+- **AI pipeline:** stock data and market context (S&P 500, Nasdaq, Dow, VIX, tech sector, world news) are gathered together. The key articles are then read in parallel (Jina Reader, falling back to local extraction with trafilatura) before a single structured prompt goes to OpenAI. The source list with real URLs is built by the app, not the model, so links can't be hallucinated.
 
-`mcp_server.py` exposes ezstox's existing portfolio and data-fetching
-logic as [Model Context Protocol](https://modelcontextprotocol.io) tools,
-using Anthropic's official `mcp` Python SDK. It wraps the existing
-`Portfolio` class and `data_fetcher` functions directly — no business
-logic was rewritten.
+## MCP server
 
-**Tools exposed:**
+`mcp_server.py` exposes ezstox as [Model Context Protocol](https://modelcontextprotocol.io) tools, using Anthropic's official `mcp` Python SDK (requires Python 3.10+):
 
 | Tool | Arguments | Returns |
 |---|---|---|
 | `get_portfolio` | none | holdings (shares, cost basis, live price, gain/loss), cash, total value |
 | `get_stock_price` | `symbol` | current price for a ticker |
-| `get_recent_news` | `symbol`, `limit` (default 3) | recent headlines with date/URL |
+| `get_recent_news` | `symbol`, `limit` (default 3) | recent headlines with date and URL |
 | `get_watchlist` | none | watchlist ticker symbols |
 
-### Setup
+Test it (after running `./ezstox` once to set up `.venv`):
 
 ```bash
-pip install -r requirements.txt   # installs mcp[cli]==1.29.0 among others
+.venv/bin/python test_mcp_client.py
+# or interactively, with the official MCP Inspector (needs Node.js):
+npx @modelcontextprotocol/inspector .venv/bin/python mcp_server.py
 ```
 
-The SDK version is pinned deliberately: `mcp` 2.0.0 is a ground-up rewrite
-with a different API (no `mcp.server.fastmcp.FastMCP`), so an unpinned
-install would break this server.
-
-### Run it
-
-```bash
-python mcp_server.py
-```
-
-This starts the server on the stdio transport and blocks, waiting for an
-MCP client to connect over stdin/stdout — that's expected, it's not meant
-to be run standalone in a terminal for long. Point a client at it instead:
-
-**Option A — test client (included):**
-
-```bash
-python test_mcp_client.py
-```
-
-Spawns `mcp_server.py`, lists the advertised tools, and calls all four
-with real arguments, printing each result so you can confirm they return
-real data.
-
-**Option B — MCP Inspector (official tool):**
-
-```bash
-npx @modelcontextprotocol/inspector python mcp_server.py
-```
-
-Opens a browser UI to list tools, inspect their schemas, and call them
-interactively. Requires Node.js.
-
-**Option C — Claude Desktop:** add to its MCP server config
-(`claude_desktop_config.json`):
+To use it from Claude Desktop, add this to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "ezstox": {
-      "command": "python",
+      "command": "/absolute/path/to/ezstox/.venv/bin/python",
       "args": ["/absolute/path/to/ezstox/mcp_server.py"]
     }
   }

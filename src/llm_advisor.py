@@ -1,515 +1,233 @@
 """
 LLM Advisor Module - AI-powered portfolio analysis
-Uses OpenAI GPT-4o to provide investment recommendations
-Optimized with fundamentals data + improved article scraping
+
+Pipeline:
+  1. Gather   - quotes, fundamentals and headlines for every symbol, plus
+                market context (indices, VIX, tech sector, world news),
+                all fetched concurrently.
+  2. Scrape   - full article text for the most relevant headlines, in
+                parallel (Jina Reader first, trafilatura as fallback).
+  3. Analyse  - one structured prompt to OpenAI.
+  4. Sources  - a numbered source list with real URLs is appended by us,
+                not the model, so links can't be hallucinated.
+
+Progress is reported through an optional `progress` object (see
+NullProgress) so the UI can show live status without this module printing.
 """
 
-import os
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
-import feedparser
 import requests
-import yfinance as yf
-from fredapi import Fred
-from newspaper import Article
-from openai import OpenAI
 
-from src.data_fetcher import get_multiple_prices, get_stock_news
+from src.config import REPORTS_DIR, get_setting, openai_model
+from src.data_fetcher import get_fundamentals_for, get_news_for, get_quotes, get_stock_news
+
+SCRAPE_WORKERS = 8
+SCRAPE_TIMEOUT = 15
+MAX_ARTICLE_CHARS = 3000
+EQUITY_ARTICLES = 5
+ETF_ARTICLES = 2
+WORLD_NEWS_ARTICLES = 5
+
+INDICES = [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow Jones")]
+TECH_SECTOR = "XLK"
+VIX = "^VIX"
+
+UNAVAILABLE = (None, "Content unavailable", "No URL available")
+BROWSER_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ezstox"}
 
 
-def scrape_with_jina(url, max_chars=3000, timeout=20):
-    """Try scraping with Jina AI"""
+class NullProgress:
+    """Progress sink that ignores everything (used when no UI is attached)."""
+
+    def stage(self, key, description, total=None):
+        pass
+
+    def advance(self, key, amount=1):
+        pass
+
+    def done(self, key, note=""):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Article scraping
+# ---------------------------------------------------------------------------
+
+
+def scrape_with_jina(url):
+    """Jina Reader returns clean article text for almost any URL."""
+    headers = {"X-Return-Format": "text"}
+    jina_key = get_setting("JINA_API_KEY")
+    if jina_key:
+        headers["Authorization"] = f"Bearer {jina_key}"
     try:
-        jina_url = f"https://r.jina.ai/{url}"
-        headers = {"X-Return-Format": "text"}
-        response = requests.get(jina_url, headers=headers, timeout=timeout)
-
-        if response.status_code == 200:
-            content = response.text[:max_chars]
-            if len(content) > 100:
-                return content
-        return None
-    except Exception:
-        return None
-
-
-def scrape_with_newspaper(url, max_chars=3000):
-    """Fallback scraper using newspaper3k"""
-    try:
-        article = Article(url)
-        article.download()
-        article.parse()
-
-        if article.text and len(article.text) > 100:
-            return article.text[:max_chars]
-        return None
-    except Exception:
-        return None
-
-
-def get_article_content(url, max_chars=3000, retries=2):
-    """Hybrid scraper: tries Jina first, then newspaper3k"""
-    if not url or url == "No link available":
-        return None
-
-    # Try Jina first (fast)
-    for attempt in range(retries):
-        content = scrape_with_jina(url, max_chars)
-        if content:
-            return content
-        if attempt < retries - 1:
-            time.sleep(1)  # Balanced delay for better quality
-
-    # Fallback to newspaper3k (reliable)
-    for attempt in range(retries):
-        content = scrape_with_newspaper(url, max_chars)
-        if content:
-            return content
-        if attempt < retries - 1:
-            time.sleep(0.5)  # Balanced delay
-
+        response = requests.get(f"https://r.jina.ai/{url}", headers=headers, timeout=SCRAPE_TIMEOUT)
+        if response.status_code == 200 and len(response.text) > 100:
+            return response.text[:MAX_ARTICLE_CHARS]
+    except requests.RequestException:
+        pass
     return None
 
 
-def scrape_article_parallel(article, retries=2):
-    """Helper function to scrape a single article (for parallel execution)"""
-    url = article.get("url")
-    if url and url != "No link available":
-        content = get_article_content(url, retries=retries)
-        article["full_content"] = content if content else "Content unavailable"
-        return article, bool(content)
-    else:
-        article["full_content"] = "No URL available"
-        return article, False
-
-
-def scrape_articles_parallel(articles, max_workers=5, retries=2):
-    """
-    Scrape multiple articles in parallel using ThreadPoolExecutor
-
-    Args:
-        articles: List of article dicts
-        max_workers: Max concurrent threads
-        retries: Number of retries per article
-
-    Returns:
-        tuple: (updated_articles, scraped_count)
-    """
-    scraped_count = 0
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all scraping tasks
-        future_to_article = {
-            executor.submit(scrape_article_parallel, article, retries): article
-            for article in articles
-        }
-
-        # Collect results as they complete
-        for future in as_completed(future_to_article):
-            try:
-                article, success = future.result()
-                if success:
-                    scraped_count += 1
-            except Exception as e:
-                # If scraping fails, mark as unavailable
-                article = future_to_article[future]
-                article["full_content"] = "Content unavailable"
-
-    return articles, scraped_count
-
-
-def get_stock_fundamentals(symbol):
-    """
-    Get key financial metrics using yfinance directly
-
-    Args:
-        symbol (str): Stock ticker
-
-    Returns:
-        dict: Financial metrics or empty dict if unavailable
-    """
-    fundamentals = {}
-
+def scrape_with_trafilatura(url):
+    """Fallback: fetch the page ourselves and extract the main text locally."""
     try:
-        # Use yfinance directly for better reliability
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
+        import trafilatura
 
-        # Asset type detection (EQUITY, ETF, MUTUALFUND, etc.)
-        fundamentals["quote_type"] = info.get("quoteType", "EQUITY")
-        fundamentals["long_name"] = info.get("longName", symbol)
-
-        # Extract available metrics with proper field names
-        fundamentals["pe_ratio"] = info.get("trailingPE")
-        fundamentals["forward_pe"] = info.get("forwardPE")
-        fundamentals["market_cap"] = info.get("marketCap")
-        fundamentals["beta"] = info.get("beta")
-        fundamentals["dividend_yield"] = info.get("dividendYield")
-
-        # 52-week range
-        fundamentals["fifty_two_week_high"] = info.get("fiftyTwoWeekHigh")
-        fundamentals["fifty_two_week_low"] = info.get("fiftyTwoWeekLow")
-
-        # Analyst targets (for equities)
-        fundamentals["analyst_target_mean"] = info.get("targetMeanPrice")
-        fundamentals["analyst_target_high"] = info.get("targetHighPrice")
-        fundamentals["analyst_target_low"] = info.get("targetLowPrice")
-
-        # Additional useful metrics
-        fundamentals["price_to_book"] = info.get("priceToBook")
-        fundamentals["revenue_growth"] = info.get("revenueGrowth")
-        fundamentals["earnings_growth"] = info.get("earningsGrowth")
-
-        # ETF-specific metrics
-        if fundamentals["quote_type"] == "ETF":
-            fundamentals["category"] = info.get("category")
-            fundamentals["total_assets"] = info.get("totalAssets")
-
-    except Exception as e:
-        print(f"  Warning: Could not fetch fundamentals for {symbol}: {str(e)[:50]}")
-
-    return fundamentals
+        response = requests.get(url, headers=BROWSER_HEADERS, timeout=SCRAPE_TIMEOUT)
+        if response.status_code != 200:
+            return None
+        text = trafilatura.extract(response.text, url=url)
+        if text and len(text) > 100:
+            return text[:MAX_ARTICLE_CHARS]
+    except Exception:
+        pass
+    return None
 
 
-def validate_percentage_change(change_pct, timeframe="5 days"):
-    """
-    Validate if a percentage change is realistic
+def get_article_content(url):
+    if not url or url == "No link available":
+        return None
+    return scrape_with_jina(url) or scrape_with_trafilatura(url)
 
-    Args:
-        change_pct (float): Percentage change
-        timeframe (str): Time period
 
-    Returns:
-        tuple: (is_valid, validated_value)
-    """
-    if abs(change_pct) > 10:
-        print(
-            f"  WARNING: Suspicious data: {change_pct:.2f}% change in {timeframe} (likely data error)"
-        )
-        return False, None
+def scrape_articles(articles, progress, key="scrape"):
+    """Fill in article["full_content"] for every article, in parallel."""
 
-    return True, change_pct
+    def scrape(article):
+        url = article.get("url")
+        if not url or url == "No link available":
+            article["full_content"] = "No URL available"
+        else:
+            article["full_content"] = get_article_content(url) or "Content unavailable"
+        progress.advance(key)
+        return article["full_content"] not in UNAVAILABLE
+
+    if not articles:
+        return 0
+    with ThreadPoolExecutor(max_workers=SCRAPE_WORKERS) as pool:
+        return sum(pool.map(scrape, articles))
+
+
+# ---------------------------------------------------------------------------
+# Market context
+# ---------------------------------------------------------------------------
+
+
+def validate_percentage_change(change_pct):
+    """A >10% move in an index over 5 days is almost certainly bad data."""
+    if change_pct is None or abs(change_pct) > 10:
+        return None
+    return change_pct
 
 
 def get_financial_news_rss(limit=10):
-    """
-    Get financial news from Google News RSS (free, no API key)
-
-    Args:
-        limit (int): Number of articles to fetch
-
-    Returns:
-        list: News articles with title, url, date
-    """
+    """Get financial news from Google News RSS (free, no API key)"""
     try:
-        rss_url = "https://news.google.com/rss/search?q=stock+market+finance+economy+when:2d&hl=en-US&gl=US&ceid=US:en"
+        import feedparser
 
-        feed = feedparser.parse(rss_url)
-        articles = []
-
-        for entry in feed.entries[:limit]:
-            articles.append(
-                {
-                    "title": entry.title,
-                    "url": entry.link,
-                    "date": (
-                        entry.published if hasattr(entry, "published") else "Recent"
-                    ),
-                }
-            )
-
-        return articles
-
-    except Exception as e:
-        print(f"  WARNING: Error fetching RSS news: {e}")
+        feed = feedparser.parse(
+            "https://news.google.com/rss/search?q=stock+market+finance+economy+when:2d"
+            "&hl=en-US&gl=US&ceid=US:en"
+        )
+        return [
+            {"title": entry.title, "url": entry.link, "date": getattr(entry, "published", "Recent")}
+            for entry in feed.entries[:limit]
+        ]
+    except Exception:
         return []
 
 
-def get_vix_from_fred(fred_api_key=None):
-    """
-    Get VIX data from FRED API (free with API key)
-
-    Args:
-        fred_api_key (str): FRED API key
-
-    Returns:
-        dict: VIX level and sentiment
-    """
-    if not fred_api_key:
-        fred_api_key = os.getenv("FRED_API_KEY")
-
-    if not fred_api_key:
-        print("  WARNING: FRED API key not found (VIX unavailable)")
-        return {"level": "N/A", "sentiment": "N/A"}
-
-    try:
-        fred = Fred(api_key=fred_api_key)
-        vix_series = fred.get_series(
-            "VIXCLS", observation_start=datetime.now() - timedelta(days=7)
-        )
-
-        if len(vix_series) > 0:
-            vix_level = round(vix_series.iloc[-1], 2)
-
-            if vix_level < 15:
-                vix_sentiment = "Low (Calm market)"
-            elif vix_level < 25:
-                vix_sentiment = "Normal"
-            else:
-                vix_sentiment = "High (Fear/Uncertainty)"
-
-            return {"level": vix_level, "sentiment": vix_sentiment}
-        else:
-            return {"level": "N/A", "sentiment": "N/A"}
-
-    except Exception as e:
-        print(f"  WARNING: Error fetching VIX from FRED: {e}")
-        return {"level": "N/A", "sentiment": "N/A"}
-
-
-def fetch_index_data(symbol, name, start_date, end_date):
-    """Helper function to fetch a single index (for parallel execution)"""
-    from openbb import obb
-
-    try:
-        data = obb.equity.price.historical(
-            symbol,
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-        )
-        df = data.to_df()
-
-        if len(df) >= 2:
-            current = df["close"].iloc[-1]
-            week_ago = df["close"].iloc[0]
-            change_pct = ((current - week_ago) / week_ago) * 100
-
-            is_valid, validated_change = validate_percentage_change(
-                change_pct, "5 days"
-            )
-
-            if is_valid:
-                return symbol, {
-                    "name": name,
-                    "current": round(current, 2),
-                    "change_5d": round(validated_change, 2),
-                }
-            else:
-                return symbol, {
-                    "name": name,
-                    "current": round(current, 2),
-                    "change_5d": "Data Error",
-                }
-        else:
-            return symbol, {"name": name, "current": "N/A", "change_5d": "N/A"}
-
-    except Exception as e:
-        print(f"    WARNING: {symbol} fetch failed: {e}")
-        return symbol, {"name": name, "current": "N/A", "change_5d": "N/A"}
-
-
-def get_macro_data(fred_api_key=None):
-    """
-    Gather broad market context data
-    OPTIMIZED: Uses parallel processing for indices and article scraping
-
-    Args:
-        fred_api_key (str): FRED API key for VIX data
-
-    Returns:
-        dict: Market indices, news, and volatility data
-    """
-    from openbb import obb
-
-    print("\n[MACRO DATA] Fetching market context...")
-
-    macro = {}
-
-    # 1. Financial news from Google RSS with parallel scraping
-    print("  - Fetching global financial news (RSS)...")
-    try:
-        articles = get_financial_news_rss(limit=10)
-
-        print("    - Scraping top articles (parallel)...")
-        articles_to_scrape = articles[:5]
-
-        # Parallel scrape with moderate workers for quality
-        articles_to_scrape, scraped_count = scrape_articles_parallel(
-            articles_to_scrape, max_workers=3, retries=2
-        )
-
-        # Update original articles list
-        for i in range(len(articles_to_scrape)):
-            articles[i] = articles_to_scrape[i]
-
-        macro["world_news"] = articles
-        print(f"    [OK] Retrieved {len(articles)} articles ({scraped_count} scraped)")
-    except Exception as e:
-        print(f"    WARNING: Error fetching news: {e}")
-        macro["world_news"] = []
-
-    # 2. Market indices (parallel fetching)
-    print("  - Fetching market indices (parallel)...")
-    indices = {}
-
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=7)
-
-    index_list = [("SPY", "S&P 500"), ("QQQ", "Nasdaq"), ("DIA", "Dow Jones")]
-
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        future_to_index = {
-            executor.submit(fetch_index_data, symbol, name, start_date, end_date): symbol
-            for symbol, name in index_list
+def build_macro(quotes, world_news, tech_news):
+    def index_entry(symbol, name):
+        quote = quotes.get(symbol)
+        if not quote:
+            return {"name": name, "current": "N/A", "change_5d": "N/A"}
+        change = validate_percentage_change(quote["change_5d_pct"])
+        return {
+            "name": name,
+            "current": quote["price"],
+            "change_5d": round(change, 2) if change is not None else "Data Error",
         }
 
-        for future in as_completed(future_to_index):
-            try:
-                symbol, data = future.result()
-                indices[symbol] = data
-                print(f"    {symbol}... OK")
-            except Exception as e:
-                symbol = future_to_index[future]
-                print(f"    {symbol}... ERROR")
-                indices[symbol] = {"name": symbol, "current": "N/A", "change_5d": "N/A"}
-
-    macro["indices"] = indices
-
-    # 3. VIX (parallel with tech sector)
-    print("  - Fetching VIX from FRED...")
-    try:
-        macro["vix"] = get_vix_from_fred(fred_api_key)
-    except Exception as e:
-        print(f"    WARNING: VIX fetch failed: {e}")
-        macro["vix"] = {"level": "N/A", "sentiment": "N/A"}
-
-    # 4. Tech sector
-    print("  - Fetching tech sector data...")
-    try:
-        tech_data = obb.equity.price.historical(
-            "XLK",
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
+    vix_quote = quotes.get(VIX)
+    if vix_quote:
+        level = vix_quote["price"]
+        sentiment = (
+            "Low (Calm market)" if level < 15 else "Normal" if level < 25 else "High (Fear/Uncertainty)"
         )
-        tech_df = tech_data.to_df()
+        vix = {"level": level, "sentiment": sentiment}
+    else:
+        vix = {"level": "N/A", "sentiment": "N/A"}
 
-        if len(tech_df) >= 2:
-            current = tech_df["close"].iloc[-1]
-            week_ago = tech_df["close"].iloc[0]
-            change_pct = ((current - week_ago) / week_ago) * 100
+    tech = index_entry(TECH_SECTOR, "Tech sector (XLK)")
+    tech["news"] = [{"title": a["title"]} for a in tech_news]
 
-            is_valid, validated_change = validate_percentage_change(
-                change_pct, "5 days"
-            )
-
-            macro["tech_sector"] = {
-                "current": round(current, 2),
-                "change_5d": round(validated_change, 2) if is_valid else "Data Error",
-            }
-        else:
-            macro["tech_sector"] = {"current": "N/A", "change_5d": "N/A"}
-
-        tech_news = obb.news.company("XLK", limit=3)
-        tech_news_df = tech_news.to_df()
-
-        tech_articles = []
-        for _, row in tech_news_df.iterrows():
-            tech_articles.append({"title": row.get("title", "No title")})
-
-        macro["tech_sector"]["news"] = tech_articles
-
-    except Exception as e:
-        print(f"    WARNING: Tech sector fetch failed: {e}")
-        macro["tech_sector"] = {"current": "N/A", "change_5d": "N/A", "news": []}
-
-    print("[OK] Macro context gathered\n")
-    return macro
+    return {
+        "indices": {symbol: index_entry(symbol, name) for symbol, name in INDICES},
+        "vix": vix,
+        "tech_sector": tech,
+        "world_news": world_news,
+    }
 
 
-def gather_stock_data(portfolio):
-    """
-    Gather stock data: prices, news (5 articles), and fundamentals
-    OPTIMIZED: Uses parallel processing for fundamentals and article scraping
+# ---------------------------------------------------------------------------
+# Data gathering
+# ---------------------------------------------------------------------------
 
-    Args:
-        portfolio: Portfolio object
 
-    Returns:
-        dict: Prices, news, and fundamentals
-    """
-    print("[STOCK DATA] Gathering stock-specific data...")
+def gather_data(portfolio, progress):
+    """Fetch everything the analysis needs, as concurrently as possible."""
+    symbols = portfolio.get_all_symbols()
+    context_symbols = [s for s, _ in INDICES] + [TECH_SECTOR, VIX]
 
-    owned = portfolio.get_portfolio_symbols()
-    watched = portfolio.get_watchlist_symbols()
-    # Remove duplicates (stocks in both owned and watched)
-    all_symbols = list(dict.fromkeys(owned + watched))
+    progress.stage("gather", "Prices, fundamentals & headlines")
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_quotes = pool.submit(get_quotes, symbols + context_symbols)
+        f_fundamentals = pool.submit(get_fundamentals_for, symbols)
+        f_news = pool.submit(get_news_for, symbols, 8)
+        f_world = pool.submit(get_financial_news_rss, 10)
+        f_tech = pool.submit(get_stock_news, TECH_SECTOR, 3)
+        quotes = f_quotes.result()
+        fundamentals = {s: f or {} for s, f in f_fundamentals.result().items()}
+        all_news = f_news.result()
+        world_news = f_world.result()
+        tech_news = f_tech.result()
 
-    # Get current prices
-    print("\n[PRICES] Fetching current prices...")
-    prices = get_multiple_prices(all_symbols)
+    prices = {s: quotes[s]["price"] for s in symbols if quotes.get(s)}
+    missing = [s for s in symbols if s not in prices]
+    note = f"{len(prices)}/{len(symbols)} priced" + (f" · missing {', '.join(missing)}" if missing else "")
+    progress.done("gather", note)
 
-    # Get fundamentals in parallel
-    print("\n[FUNDAMENTALS] Fetching fundamentals (parallel)...")
-    fundamentals_data = {}
+    # Decide which articles are worth reading in full (ETFs need fewer -
+    # they're analysed through their underlying index/commodity instead).
+    news = {}
+    to_scrape = []
+    for symbol in symbols:
+        is_etf = fundamentals[symbol].get("quote_type") == "ETF"
+        picked = [dict(a) for a in all_news.get(symbol, [])[: ETF_ARTICLES if is_etf else EQUITY_ARTICLES]]
+        news[symbol] = picked
+        to_scrape.extend(picked)
+    world_news = [dict(a) for a in world_news]
+    to_scrape.extend(world_news[:WORLD_NEWS_ARTICLES])
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_symbol = {
-            executor.submit(get_stock_fundamentals, symbol): symbol
-            for symbol in all_symbols
-        }
+    progress.stage("scrape", "Reading full articles", total=len(to_scrape))
+    scraped = scrape_articles(to_scrape, progress)
+    progress.done("scrape", f"{scraped}/{len(to_scrape)} articles read")
 
-        for future in as_completed(future_to_symbol):
-            symbol = future_to_symbol[future]
-            try:
-                fundamentals_data[symbol] = future.result()
-                print(f"  {symbol}... OK")
-            except Exception as e:
-                print(f"  {symbol}... ERROR: {str(e)[:30]}")
-                fundamentals_data[symbol] = {}
+    stock_data = {"prices": prices, "news": news, "fundamentals": fundamentals}
+    return stock_data, build_macro(quotes, world_news, tech_news)
 
-    # Get news with parallel scraping
-    print("\n[NEWS] Fetching news + scraping articles (parallel)...")
-    news_data = {}
 
-    for symbol in all_symbols:
-        print(f"  {symbol}...", end=" ", flush=True)
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
 
-        quote_type = fundamentals_data[symbol].get("quote_type", "EQUITY")
 
-        # ETFs need less news - they track indices/commodities
-        if quote_type == "ETF":
-            # Get only 2 articles for ETFs (lighter scraping)
-            articles = get_stock_news(symbol, limit=2)
-            articles_to_scrape = articles[:2]
-
-            # Parallel scrape with conservative workers for quality
-            articles_to_scrape, scraped_count = scrape_articles_parallel(
-                articles_to_scrape, max_workers=2, retries=2
-            )
-
-            news_data[symbol] = articles_to_scrape
-            print(f"{scraped_count}/2 articles [ETF]")
-        else:
-            # Full scraping for equities
-            articles = get_stock_news(symbol, limit=8)
-            articles_to_scrape = articles[:5]
-
-            # Parallel scrape with moderate workers to balance speed and quality
-            articles_to_scrape, scraped_count = scrape_articles_parallel(
-                articles_to_scrape, max_workers=3, retries=2
-            )
-
-            news_data[symbol] = articles_to_scrape
-            print(f"{scraped_count}/5 articles")
-
-        # Small delay between stocks to avoid overwhelming Jina API
-        time.sleep(0.5)
-
-    print("\n[OK] Stock data gathered\n")
-
-    return {"prices": prices, "news": news_data, "fundamentals": fundamentals_data}
+def _has_content(article):
+    return article.get("full_content") not in UNAVAILABLE
 
 
 def format_llm_prompt(portfolio, stock_data, macro_data):
@@ -517,7 +235,7 @@ def format_llm_prompt(portfolio, stock_data, macro_data):
     Format FT-style prompt with fundamentals and data quality tracking
     """
     owned = portfolio.get_portfolio_symbols()
-    watched = portfolio.get_watchlist_symbols()
+    watched = [s for s in portfolio.get_watchlist_symbols() if s not in owned]
     prices = stock_data["prices"]
     news = stock_data["news"]
     fundamentals = stock_data.get("fundamentals", {})
@@ -561,169 +279,89 @@ ANALYSIS DATE: {datetime.now().strftime('%Y-%m-%d %H:%M')}
 HOLDINGS:
 """
 
-    # Holdings with fundamentals
-    if owned:
-        for symbol in owned:
-            holding = portfolio.holdings[symbol]
-            current_price = prices.get(symbol, 0)
+    for symbol in owned:
+        holding = portfolio.holdings[symbol]
+        current_price = prices.get(symbol)
+        fund = fundamentals.get(symbol, {})
+        quote_type = fund.get("quote_type", "EQUITY")
+        type_label = f"[{quote_type}]" if quote_type != "EQUITY" else ""
+
+        if current_price is None:
+            prompt += f"\n{symbol} {type_label}: {holding['shares']:g} sh @ ${holding['cost_basis']:.2f} -> price unavailable\n"
+        else:
             total_cost = holding["shares"] * holding["cost_basis"]
-            current_value = holding["shares"] * current_price
-            gain_loss = current_value - total_cost
+            gain_loss = holding["shares"] * current_price - total_cost
             gain_loss_pct = (gain_loss / total_cost * 100) if total_cost > 0 else 0
-
-            # Get fundamentals and asset type
-            fund = fundamentals.get(symbol, {})
-            quote_type = fund.get("quote_type", "EQUITY")
-            long_name = fund.get("long_name", symbol)
-
-            # Show asset type in header
-            type_label = f"[{quote_type}]" if quote_type != "EQUITY" else ""
-
-            prompt += f"\n{symbol} {type_label}: {holding['shares']} sh @ ${holding['cost_basis']:.2f} -> ${current_price:.2f} | P&L: ${gain_loss:.2f} ({gain_loss_pct:+.1f}%)\n"
-            prompt += f"  {long_name}\n"
-
-            # Conditional metrics based on asset type
-            if quote_type == "EQUITY":
-                # P/E ratio with explicit None handling
-                pe_val = fund.get("pe_ratio")
-                if pe_val is not None:
-                    prompt += f"  P/E: {pe_val:.2f}"
-                else:
-                    prompt += f"  P/E: N/A"
-
-                # Analyst target with explicit None handling
-                target_val = fund.get("analyst_target_mean")
-                if target_val is not None and target_val > 0:
-                    upside = (
-                        ((target_val - current_price) / current_price * 100)
-                        if current_price > 0
-                        else 0
-                    )
-                    prompt += f" | Analyst Target: ${target_val:.2f} ({upside:+.1f}%)"
-                else:
-                    prompt += f" | Analyst Target: N/A"
-
-                # 52-week range
-                high_val = fund.get("fifty_two_week_high")
-                low_val = fund.get("fifty_two_week_low")
-                if high_val is not None and low_val is not None:
-                    prompt += f" | 52w: ${low_val:.2f}-${high_val:.2f}"
-
-            elif quote_type == "ETF":
-                # ETF-specific metrics
-                high_val = fund.get("fifty_two_week_high")
-                low_val = fund.get("fifty_two_week_low")
-                if high_val is not None and low_val is not None:
-                    prompt += f"  52w Range: ${low_val:.2f}-${high_val:.2f}"
-
-                category = fund.get("category")
-                if category:
-                    prompt += f" | Category: {category}"
-
-            else:
-                # Commodities, currencies, etc - just show 52-week range
-                high_val = fund.get("fifty_two_week_high")
-                low_val = fund.get("fifty_two_week_low")
-                if high_val is not None and low_val is not None:
-                    prompt += f"  52w Range: ${low_val:.2f}-${high_val:.2f}"
-
-            prompt += "\n"
+            prompt += (
+                f"\n{symbol} {type_label}: {holding['shares']:g} sh @ ${holding['cost_basis']:.2f} "
+                f"-> ${current_price:.2f} | P&L: ${gain_loss:.2f} ({gain_loss_pct:+.1f}%)\n"
+            )
+        prompt += f"  {fund.get('long_name', symbol)}\n"
+        prompt += _metrics_line(fund, quote_type, current_price or 0, target_label="Analyst Target") + "\n"
 
     total_value = portfolio.cash + sum(
         portfolio.holdings[s]["shares"] * prices.get(s, 0) for s in owned
     )
     cash_pct = (portfolio.cash / total_value * 100) if total_value > 0 else 100
-
     prompt += f"\nCASH: ${portfolio.cash:,.0f} ({cash_pct:.1f}%)\nTOTAL: ${total_value:,.0f}\n"
 
-    # Watchlist
     if watched:
         prompt += "\nWATCHLIST:\n"
         for symbol in watched:
-            price = prices.get(symbol, 0)
+            price = prices.get(symbol)
             fund = fundamentals.get(symbol, {})
             quote_type = fund.get("quote_type", "EQUITY")
-            long_name = fund.get("long_name", symbol)
-
             type_label = f"[{quote_type}]" if quote_type != "EQUITY" else ""
-            prompt += f"{symbol} {type_label}: ${price}\n"
-            prompt += f"  {long_name}\n"
+            price_text = f"${price:.2f}" if price is not None else "price unavailable"
+            prompt += f"{symbol} {type_label}: {price_text}\n"
+            prompt += f"  {fund.get('long_name', symbol)}\n"
+            prompt += _metrics_line(fund, quote_type, price or 0, target_label="Target") + "\n"
 
-            # Conditional metrics based on asset type
-            if quote_type == "EQUITY":
-                # P/E ratio
-                pe_val = fund.get("pe_ratio")
-                if pe_val is not None:
-                    prompt += f"  P/E: {pe_val:.2f}"
-                else:
-                    prompt += f"  P/E: N/A"
-
-                # Analyst target
-                target_val = fund.get("analyst_target_mean")
-                if target_val is not None and target_val > 0:
-                    upside = ((target_val - price) / price * 100) if price > 0 else 0
-                    prompt += f" | Target: ${target_val:.2f} ({upside:+.1f}%)"
-                else:
-                    prompt += f" | Target: N/A"
-
-            elif quote_type == "ETF":
-                # ETF metrics
-                category = fund.get("category")
-                if category:
-                    prompt += f"  Category: {category}"
-
-            prompt += "\n"
-
-    # Macro
+    # Market context
     prompt += "\n=== MARKET CONTEXT ===\n"
-    for symbol, data in macro_data.get("indices", {}).items():
-        change = data.get("change_5d", "N/A")
-        if change not in ["N/A", "Data Error"]:
-            prompt += f"{data['name']}: {change:+.1f}% (5d)\n"
-
+    for data in macro_data.get("indices", {}).values():
+        if isinstance(data.get("change_5d"), (int, float)):
+            prompt += f"{data['name']}: {data['change_5d']:+.1f}% (5d)\n"
+    tech = macro_data.get("tech_sector", {})
+    if isinstance(tech.get("change_5d"), (int, float)):
+        prompt += f"{tech['name']}: {tech['change_5d']:+.1f}% (5d)\n"
     vix = macro_data.get("vix", {})
     if vix.get("level") != "N/A":
         prompt += f"VIX: {vix['level']} ({vix['sentiment']})\n"
 
+    world_news = macro_data.get("world_news", [])
+    if world_news:
+        prompt += "\nWORLD FINANCIAL NEWS (last 2 days):\n"
+        for i, article in enumerate(world_news, 1):
+            prompt += f"[WORLD-{i}] {article['title']}\n"
+            if _has_content(article):
+                prompt += f"    {article['full_content'][:300]}...\n"
+
     # Stock news with data quality
     prompt += "\n=== STOCK INTELLIGENCE ===\n"
-
     for symbol in owned + watched:
         stock_news = news.get(symbol, [])
         fund = fundamentals.get(symbol, {})
         quote_type = fund.get("quote_type", "EQUITY")
+        available_count = sum(1 for a in stock_news if _has_content(a))
 
-        available_count = sum(
-            1
-            for a in stock_news
-            if a.get("full_content")
-            not in [None, "Content unavailable", "No URL available"]
-        )
-
-        # Different quality thresholds for different asset types
         if quote_type == "EQUITY":
             quality = (
                 "[GOOD]" if available_count >= 3 else "[LIMITED]" if available_count >= 1 else "[INSUFFICIENT]"
             )
-            expected = 5
+            expected = EQUITY_ARTICLES
         else:
-            # ETFs need less data - use macro trends instead
             quality = "[ETF - Use Macro Data]"
-            expected = 2
+            expected = ETF_ARTICLES
 
         prompt += f"\n{symbol} {quality} ({available_count}/{expected} articles):\n"
 
         if available_count > 0:
             for i, article in enumerate(stock_news, 1):
                 prompt += f"[{symbol}-{i}] {article['title']}\n"
-                content = article.get("full_content", "")
-                if content and content not in [
-                    "Content unavailable",
-                    "No URL available",
-                ]:
-                    prompt += f"    {content[:400]}...\n"
+                if _has_content(article):
+                    prompt += f"    {article['full_content'][:400]}...\n"
 
-        # Special handling for ETFs - guide AI on what to analyze
         if quote_type == "ETF":
             long_name = fund.get("long_name", "")
             if "S&P 500" in long_name or "VUSA" in symbol:
@@ -732,32 +370,31 @@ HOLDINGS:
                 prompt += "  [ANALYSIS GUIDE] Track gold prices - inflation hedge, safe haven demand\n"
             elif "Silver" in long_name or "SLV" in symbol:
                 prompt += "  [ANALYSIS GUIDE] Track silver prices - industrial demand + precious metal\n"
-        elif quote_type == "EQUITY" and available_count == 0:
+        elif available_count == 0:
             prompt += "  [INSUFFICIENT DATA] - Cannot analyze\n"
 
-    # Instructions
     prompt += """
 
 === YOUR ANALYSIS ===
 
-Format (max 2,000 words total):
+Format as Markdown (max 2,000 words total):
 
-I. MARKET OVERVIEW (100-150 words)
-II. HOLDINGS: For each stock - Hold/Add/Trim? Why? (150-200 words each)
-III. WATCHLIST: Top 2-3 picks only - Buy/Pass? Why? (150-200 words each)
-IV. ACTIONS: Top 3-5 specific moves this week
+## I. Market Overview (100-150 words)
+## II. Holdings - for each stock: Hold/Add/Trim? Why? (150-200 words each, one ### heading per stock)
+## III. Watchlist - top 2-3 picks only: Buy/Pass? Why? (150-200 words each, one ### heading per stock)
+## IV. Actions - top 3-5 specific moves this week, as a numbered list
 
 FORMATTING REQUIREMENTS:
-- Start each stock analysis with key metrics on separate lines:
-  Current Price: $X.XX
-  P/E: X.XX (for equities only, omit for ETFs)
-  Analyst Target: $X.XX (for equities only, omit for ETFs or if N/A)
-- Then provide detailed analysis paragraph
-- End with: Conviction: X/10 with clear reasoning
-- Use proper spacing and line breaks for readability
+- Start each stock analysis with key metrics as a short bullet list:
+  - Current Price: $X.XX
+  - P/E: X.XX (for equities only, omit for ETFs)
+  - Analyst Target: $X.XX (for equities only, omit for ETFs or if N/A)
+- Then provide a detailed analysis paragraph
+- End with: **Conviction: X/10** with clear reasoning
+- Do NOT add a sources or references section - one is appended automatically
 
 CONTENT REQUIREMENTS:
-- Cite articles using the format [SYMBOL-#] (e.g., [CEG-1], [AAPL-2])
+- Cite articles using the format [SYMBOL-#] (e.g., [CEG-1], [AAPL-2]) or [WORLD-#] for world news
 - ONLY reference articles that match the stock symbol you're analyzing
 - Use EXACT P/E ratios from the data above - do not round or estimate
 - ONLY cite analyst targets if explicitly shown as "Target: $X" above
@@ -784,105 +421,132 @@ CRITICAL - ASSET TYPE HANDLING:
 
 - For ETFs marked "[ETF - Use Macro Data]", you have sufficient data to provide analysis using market indices, VIX, and macro trends
 """
-
     return prompt
 
 
-def call_openai(prompt, api_key=None):
-    """Send prompt to OpenAI GPT-4o-mini"""
-    if api_key is None:
-        api_key = os.getenv("OPENAI_API_KEY")
+def _metrics_line(fund, quote_type, price, target_label):
+    """One line of key metrics, tailored to the asset type."""
+    parts = []
+    low, high = fund.get("fifty_two_week_low"), fund.get("fifty_two_week_high")
+    if quote_type == "EQUITY":
+        pe = fund.get("pe_ratio")
+        parts.append(f"P/E: {pe:.2f}" if pe is not None else "P/E: N/A")
+        target = fund.get("analyst_target_mean")
+        if target:
+            upside = ((target - price) / price * 100) if price > 0 else 0
+            parts.append(f"{target_label}: ${target:.2f} ({upside:+.1f}%)")
+        else:
+            parts.append(f"{target_label}: N/A")
+        if low is not None and high is not None:
+            parts.append(f"52w: ${low:.2f}-${high:.2f}")
+    else:
+        if low is not None and high is not None:
+            parts.append(f"52w Range: ${low:.2f}-${high:.2f}")
+        if quote_type == "ETF" and fund.get("category"):
+            parts.append(f"Category: {fund['category']}")
+    return "  " + " | ".join(parts) if parts else ""
 
+
+# ---------------------------------------------------------------------------
+# Model call, sources, reports
+# ---------------------------------------------------------------------------
+
+
+def call_openai(prompt, model):
+    """Send prompt to OpenAI. Raises RuntimeError with a readable message on failure."""
+    api_key = get_setting("OPENAI_API_KEY")
     if not api_key:
-        return "ERROR: OpenAI API key not found!"
+        raise RuntimeError("No OpenAI API key set - add one in Settings.")
+
+    from openai import OpenAI
 
     try:
-        client = OpenAI(api_key=api_key)
-
-        print("[AI] Sending to OpenAI GPT-4o-mini...\n")
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = OpenAI(api_key=api_key).chat.completions.create(
+            model=model,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice with detailed analysis. Always cite your sources using exact article references. Never make up data. Format responses with clear structure and comprehensive reasoning.",
+                    "content": "You are an expert financial advisor. Provide clear, specific, evidence-based investment advice with detailed analysis. Always cite your sources using exact article references. Never make up data. Format responses as clean Markdown with clear structure and comprehensive reasoning.",
                 },
                 {"role": "user", "content": prompt},
             ],
             temperature=0.6,
             max_tokens=2500,
         )
-
-        return response.choices[0].message.content
-
     except Exception as e:
-        return f"ERROR: Failed to call OpenAI API: {str(e)}"
+        raise RuntimeError(f"OpenAI request failed: {e}") from e
+    return (response.choices[0].message.content or "").strip()
 
 
-def get_ai_advice(portfolio, openai_key=None, fred_key=None):
+def build_sources(portfolio, stock_data, macro_data):
+    """Every article the model could cite, with its citation tag and URL."""
+    sources = []
+    for symbol in portfolio.get_all_symbols():
+        for i, article in enumerate(stock_data["news"].get(symbol, []), 1):
+            sources.append({"tag": f"{symbol}-{i}", "read": _has_content(article), **article})
+    for i, article in enumerate(macro_data.get("world_news", []), 1):
+        sources.append({"tag": f"WORLD-{i}", "read": _has_content(article), **article})
+    return sources
+
+
+def get_ai_advice(portfolio, progress=None):
     """
     Main function: Get complete AI investment advice
 
-    Args:
-        portfolio: Portfolio object
-        openai_key (str): Optional OpenAI API key
-        fred_key (str): Optional FRED API key
-
     Returns:
-        str: Formatted AI advice
+        dict: advice (Markdown), sources, model, stock_data, macro, created
+    Raises:
+        RuntimeError: if there's nothing to analyse or the model call fails
     """
-    print("\n" + "=" * 60)
-    print("                  AI Financial Advisor")
-    print("=" * 60)
+    progress = progress or NullProgress()
+    if portfolio.is_empty:
+        raise RuntimeError("Your portfolio and watchlist are empty - add some symbols first.")
 
-    # Gather all data
-    stock_data = gather_stock_data(portfolio)
-    macro_data = get_macro_data(fred_key)
+    stock_data, macro_data = gather_data(portfolio, progress)
 
-    # Format prompt
-    print("[ANALYSIS] Formatting prompt...\n")
-    prompt = format_llm_prompt(portfolio, stock_data, macro_data)
+    model = openai_model()
+    progress.stage("ai", f"Analysing with {model}")
+    advice = call_openai(format_llm_prompt(portfolio, stock_data, macro_data), model)
+    if not advice:
+        raise RuntimeError("The model returned an empty response - try again.")
+    progress.done("ai")
 
-    # Get AI response
-    advice = call_openai(prompt, openai_key)
+    return {
+        "advice": advice,
+        "sources": build_sources(portfolio, stock_data, macro_data),
+        "model": model,
+        "stock_data": stock_data,
+        "macro": macro_data,
+        "created": datetime.now(),
+    }
 
-    print("=" * 60)
-    print("                  Analysis Complete")
-    print("=" * 60)
-    print()
 
-    # Return the advice (caller will print it)
-    if not advice or len(advice) == 0:
-        print("WARNING: No advice generated")
-        return None
+def save_report(result):
+    """Save the report (with sources) as Markdown under reports/. Returns the path."""
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    created = result["created"]
+    path = REPORTS_DIR / f"{created:%Y-%m-%d_%H%M%S}.md"
+    lines = [
+        f"# ezstox AI analysis - {created:%d %b %Y, %H:%M}",
+        "",
+        f"_Model: {result['model']}_",
+        "",
+        result["advice"],
+        "",
+        "## Sources",
+        "",
+    ]
+    for source in result["sources"]:
+        url = source.get("url")
+        title = source.get("title", "No title")
+        link = f"[{title}]({url})" if url and url != "No link available" else title
+        lines.append(f"- **[{source['tag']}]** {link}")
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
-    # Debug: Show article quality per stock
-    print("\n" + "=" * 60)
-    print("               Article Scraping Summary")
-    print("=" * 60)
 
-    owned = portfolio.get_portfolio_symbols()
-    watched = portfolio.get_watchlist_symbols()
-    # Remove duplicates (stocks in both owned and watched)
-    all_symbols = list(dict.fromkeys(owned + watched))
-
-    for symbol in all_symbols:
-        stock_news = stock_data['news'].get(symbol, [])
-        fund = stock_data['fundamentals'].get(symbol, {})
-        quote_type = fund.get("quote_type", "EQUITY")
-
-        scraped_count = sum(
-            1 for a in stock_news
-            if a.get("full_content") not in [None, "Content unavailable", "No URL available"]
-        )
-
-        type_label = f" [{quote_type}]" if quote_type != "EQUITY" else ""
-        print(f"\n{symbol}{type_label}: {scraped_count}/{len(stock_news)} articles scraped")
-
-        for i, article in enumerate(stock_news, 1):
-            has_content = article.get("full_content") not in [None, "Content unavailable", "No URL available"]
-            status = "[OK]" if has_content else "[--]"
-            print(f"  [{symbol}-{i}] {status} {article.get('title', 'No title')[:60]}...")
-
-    return advice
+def list_reports():
+    """Saved reports, newest first."""
+    if not REPORTS_DIR.exists():
+        return []
+    return sorted(REPORTS_DIR.glob("*.md"), reverse=True)

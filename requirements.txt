@@ -1,13 +1,22 @@
-openbb
-matplotlib
+# Market data, prices, news and fundamentals (replaces OpenBB, which was
+# only wrapping yfinance here at ~100x the install size and import time)
+yfinance
 pandas
-feedparser
-requests
-fredapi
+
+# Terminal UI
+rich
+
+# Config (.env file for API keys)
+python-dotenv
+
+# AI advisor
 openai
-newspaper3k
+requests
+feedparser
+trafilatura
 
 # MCP server (mcp_server.py). Pinned: mcp 2.0.0 is a from-scratch SDK
 # rewrite with a different API (no mcp.server.fastmcp.FastMCP), so an
-# unpinned install would break this server.
-mcp[cli]==1.29.0
+# unpinned install would break this server. Needs Python 3.10+, so it's
+# skipped on older interpreters rather than failing the whole install.
+mcp[cli]==1.29.0; python_version >= "3.10"

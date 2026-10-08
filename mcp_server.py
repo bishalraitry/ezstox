@@ -22,7 +22,7 @@ model doesn't need a custom integration per data source.
 Server/client relationship
 ---------------------------
 This file *is* an MCP server: it owns the real data (the Portfolio
-class, the OpenBB-backed fetchers) and only ever reacts to requests.
+class, the yfinance-backed fetchers) and only ever reacts to requests.
 It does not call out to an LLM itself. An MCP *client* (e.g. Claude
 Desktop, or test_mcp_client.py in this repo) starts this process,
 speaks JSON-RPC 2.0 over stdio to it, asks "what tools do you have"
@@ -82,10 +82,10 @@ def get_portfolio() -> dict:
     live price, and gain/loss, plus the cash balance and total
     portfolio value. Reads from ezstox's data/portfolio.txt and
     data/cash.txt via the existing Portfolio class, and fetches live
-    prices for held symbols via OpenBB.
+    prices for held symbols via yfinance.
     """
     with _stdout_to_stderr():
-        portfolio = Portfolio(silent=True)
+        portfolio = Portfolio()
         symbols = portfolio.get_portfolio_symbols()
 
         current_prices = {}
@@ -106,7 +106,7 @@ def get_portfolio() -> dict:
 def get_stock_price(symbol: str) -> dict:
     """
     Get the current price for a stock ticker symbol, e.g. "AAPL" or
-    "NVDA". Reuses ezstox's existing OpenBB-backed price fetcher.
+    "NVDA". Reuses ezstox's existing price fetcher.
     """
     symbol = symbol.strip().upper()
     with _stdout_to_stderr():
@@ -136,7 +136,7 @@ def get_watchlist() -> list[str]:
     not held, from ezstox's data/watchlist.txt.
     """
     with _stdout_to_stderr():
-        portfolio = Portfolio(silent=True)
+        portfolio = Portfolio()
         return portfolio.get_watchlist_symbols()
 
 
