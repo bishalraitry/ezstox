@@ -5,9 +5,11 @@ Start it with ./ezstox (which sets everything up on first run). Running
 `python main.py` directly also works once dependencies are installed.
 
     ./ezstox                  interactive menu
-    ./ezstox dashboard        holdings, P&L and watchlist
+    ./ezstox dashboard        holdings, P&L, watchlist and highlights
+    ./ezstox insights         risk, performance vs S&P 500, diversification
+    ./ezstox watch            auto-refreshing full-screen dashboard
     ./ezstox news [TICKER]    headlines for your stocks, or one ticker
-    ./ezstox lookup TICKER    quote, key stats and news for any ticker
+    ./ezstox lookup TICKER    quote, fundamentals and news (name works too)
     ./ezstox ai               full AI analysis of your portfolio
 """
 
@@ -32,11 +34,14 @@ def parse_args(argv):
     )
     commands = parser.add_subparsers(dest="command", metavar="command")
     commands.add_parser("menu", help="interactive menu (default)")
-    commands.add_parser("dashboard", help="holdings, P&L and watchlist")
+    commands.add_parser("dashboard", help="holdings, P&L, watchlist and highlights")
+    commands.add_parser("insights", help="risk, performance vs S&P 500, diversification, signals")
+    watch = commands.add_parser("watch", help="auto-refreshing full-screen dashboard")
+    watch.add_argument("--interval", type=int, default=60, help="seconds between refreshes (default 60)")
     news = commands.add_parser("news", help="headlines for your stocks, or one ticker")
     news.add_argument("symbol", nargs="?", help="ticker, e.g. AAPL (default: all your stocks)")
-    lookup = commands.add_parser("lookup", help="quote, key stats and news for any ticker")
-    lookup.add_argument("symbol", help="ticker, e.g. NVDA")
+    lookup = commands.add_parser("lookup", help="quote, fundamentals and news for any ticker or company")
+    lookup.add_argument("symbol", nargs="+", help='ticker or company name, e.g. NVDA or "apple"')
     commands.add_parser("ai", help="full AI analysis of your portfolio")
     commands.add_parser("reports", help="browse saved AI analyses")
     return parser.parse_args([LEGACY_FLAGS.get(arg, arg) for arg in argv])
@@ -56,12 +61,16 @@ def main(argv=None):
 
     if command == "dashboard":
         app.dashboard(portfolio)
+    elif command == "insights":
+        app.insights(portfolio)
+    elif command == "watch":
+        app.watch(portfolio, interval=max(10, args.interval))
     elif command == "news":
         app.news(portfolio, symbol=args.symbol.upper() if args.symbol else None, ask=False)
     elif command == "lookup":
-        app.lookup(portfolio, symbol=args.symbol.upper(), offer_add=False)
+        app.lookup(portfolio, symbol=" ".join(args.symbol), offer_add=False)
     elif command == "ai":
-        app.ai_analysis(portfolio, confirm=False)
+        app.ai_analysis(portfolio, confirm=False, followups=sys.stdin.isatty())
     elif command == "reports":
         app.reports(portfolio)
 

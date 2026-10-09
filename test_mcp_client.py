@@ -70,6 +70,10 @@ async def main():
             _print_result(
                 await session.call_tool("get_recent_news", {"symbol": "AAPL", "limit": 2})
             )
+            print()
+
+            print("=== get_portfolio_insights() ===")
+            _print_result(await session.call_tool("get_portfolio_insights", {}))
 
 
 if __name__ == "__main__":

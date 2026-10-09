@@ -140,5 +140,38 @@ def get_watchlist() -> list[str]:
         return portfolio.get_watchlist_symbols()
 
 
+@mcp.tool()
+def get_portfolio_insights() -> dict:
+    """
+    Get computed portfolio analytics: value in the base currency,
+    performance of the current holdings vs the S&P 500 (1M to 1Y),
+    volatility, beta, max drawdown, Sharpe ratio, diversification
+    (effective positions, most correlated pairs), sector allocation,
+    upcoming earnings/ex-dividend dates, and ranked plain-English
+    findings (risk / watch / info / good).
+    """
+    from src import analytics
+
+    def rounded(value):
+        return round(value, 4) if isinstance(value, float) else value
+
+    with _stdout_to_stderr():
+        a = analytics.run(Portfolio())
+    snap, m = a["snapshot"], a["metrics"]
+    return {
+        "base_currency": a["base"],
+        "summary": {k: rounded(snap[k]) for k in ("total_value", "holdings_value", "cash", "cash_pct", "pnl", "pnl_pct", "day_pnl", "day_pct")},
+        "weights_pct": {p["symbol"]: rounded(p.get("weight")) for p in snap["positions"]},
+        "returns_pct": {k: rounded(v) for k, v in m.get("returns", {}).items()},
+        "benchmark_returns_pct": {k: rounded(v) for k, v in a["benchmark_returns"].items()},
+        "risk": {k: rounded(m.get(k)) for k in ("volatility", "beta", "max_drawdown", "current_drawdown", "sharpe", "effective_positions", "avg_correlation")},
+        "most_correlated": [{"pair": [x, y], "correlation": round(r, 3)} for x, y, r in m.get("correlations", [])[:5]],
+        "sectors_pct": {name: round(pct, 2) for name, _, pct in a["sectors"]},
+        "upcoming_events": [{**e, "date": e["date"].isoformat()} for e in a["events"]],
+        "findings": a["findings"],
+        "unpriced": snap["unpriced"] + snap["unconverted"],
+    }
+
+
 if __name__ == "__main__":
     mcp.run()

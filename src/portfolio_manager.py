@@ -11,9 +11,9 @@ import os
 import re
 import tempfile
 
-from src.config import DATA_DIR
+from src import config
 
-SYMBOL_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.\-=^]{0,14}$")
+SYMBOL_PATTERN = re.compile(r"^\^?[A-Z0-9][A-Z0-9.\-=]{0,14}$")
 
 
 def is_valid_symbol(symbol):
@@ -37,7 +37,8 @@ def _atomic_write(path, text):
 class Portfolio:
     """Manage portfolio holdings, watchlist, and cash"""
 
-    def __init__(self, data_dir=DATA_DIR):
+    def __init__(self, data_dir=None):
+        data_dir = data_dir or config.DATA_DIR
         self.portfolio_file = data_dir / "portfolio.txt"
         self.watchlist_file = data_dir / "watchlist.txt"
         self.cash_file = data_dir / "cash.txt"

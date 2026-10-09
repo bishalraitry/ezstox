@@ -11,10 +11,11 @@ venv/
 env/
 openbb_env/
 
-# Your private data, API keys and AI reports
+# Your private data, API keys, AI reports and cached market data
 data/
 .env
 reports/
+.cache/
 
 # IDE / OS
 .vscode/
